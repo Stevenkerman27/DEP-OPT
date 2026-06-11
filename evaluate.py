@@ -51,8 +51,8 @@ typ_speed = 12
 max_AOA = 10
 density = 1.225
 opb.density = density
-cD0 = 0.12
-cD0_S = 0.06
+cD0 = 0.027
+cD0_S = 0.401
 G = 5
 SF = 1.5
 n_ult = G * SF
@@ -62,11 +62,11 @@ g = 9.8
 opb.g = g
 
 #analysis parameter
-tess_interval = 0.0093
-drag_maxit = 9
+tess_interval = 0.01
+drag_maxit = 5
 omega_lift = 0.7
 omega_drag = 0.7
-max_step = 0.4  # deg
+max_step = 0.5  # deg
 
 #定义飞机
 Kn = 0.1
@@ -97,7 +97,8 @@ twist = 0
 #prop ele
 prop_ele = 0.01
 #[15, 0, 0.73], [7.5, -20, 0.5]]
-condition = [[7.5, -20, 0.5]] # speed, flap, thrust_ratio
+#condition = [[7.5, -20, 0.5]] # speed, flap, thrust_ratio
+condition = [[15, 0, 0.73]]
 # 获取当前脚本所在目录
 script_dir = os.path.dirname(os.path.abspath(__file__))
 # 创建 outputs 子文件夹（如果不存在）
@@ -154,7 +155,7 @@ for n in condition:
     flight_condition = {"speed": speed, "max_AOA":max_AOA, "Cl_target":Cl_target, "TR": thrust_ratio, "d0":d0 }
     geo_info = {"spanlist":spanlist, "chordlist":chordlist, "span":span, "wing_S":wing_S, "bref":Mean_chord, "cref":2*span,
                 "CG": CG, "def_cfg": def_cfg, "prop_D":prop_D,"prop_D_inch":prop_D_inch, "prop_pos":prop_pos}
-    config={"max_it":drag_maxit, "tol":[0.01, 0.01, 0.01], "relax":[omega_drag, omega_lift], "max_alpha_step":max_step,"propdata":prop_data} 
+    config={"max_it":drag_maxit, "tol":[0.03, 0.01, 0.01], "relax":[omega_drag, omega_lift], "max_alpha_step":max_step,"propdata":prop_data} 
     # 2 options of accuracy for wake, tol and fcators in sequence of drag, lift, moment, relaxtion factor in sequence of drag and lift
     lift, drag, power, alpha, RPM, thrust, mass_result, _ = opb.single_point(flight_condition, geo_info, config)
 

@@ -3,102 +3,99 @@ import os
 import numpy as np
 import pandas as pd
 import infrastructure as opb
+import prop
 import matplotlib.pyplot as plt
-cfg = {"wing_S": 0, "bref": 0,"cref": 0}
 
-wing_pos = {"name": "Mainwing", "x":0, "y":0, "z":0, "yr": 1}
-
+# Global Config (Mirroring opt)
+wing_pos = {"name": "Mainwing", "x":0, "y":0, "z":0, "yr": 2} # 2 deg for opt
+tail_pos = {"name": "HT", "x":0.615, "y":0, "z":-0.03, "yr": 0}
 airfoil_cfg = {"filename": None, "Camber" : 0.04,"CamberLoc": 0.4,"ThickChord": 0.12}
+airfoiltail_cfg = {"filename": None, "Camber" : 0, "CamberLoc": 0, "ThickChord": 0.12}
+tail_cfg = {"root": 0.168,"tip": 0.095,"span": 0.24}
 
-flap_cfg = {"name": "Flaperon", "c" :1, "Length_Start" : 0.3,"Length_End" : 0.25,"length" : 0.8}
+# Params
+cruise_spd = 15
+fuse_w = 0.07
+liftprop_Dia = 8
+tipprop_Dia = 13
+prop_ele = 0.01
+CG = 0.072748
+G = 5 # Match evaluate.py
+SF = 1.5
+opb.SF = SF
+opb.G = G
+opb.g = 9.8
+opb.density = 1.225
+mass_prop = {"S_density": 1.6, "CF_Strength": 450e6, "CF_rho": 2000, "fuse_mass": 1.2, "prop": [0.05,0.05,0.05,0.12], "payload": 0.3}
+opb.mass_prop = mass_prop
 
-def_cfg = {"Flaperon": 30}
-
-weight = {"S_density": 1.75, "CF_Strength": 400e6, "CF_rho": 2000, "fuse_weight": 1.2, "prop-DW": 0.1, "payload": 0.5} # weight in kg, strength in Pa
-
-#setting
-include_weight = 1
-include_TL = 1
-reuse_pre = 1
-mass = 1.2
-
-root = None
-labels = {}  # 键为变量名，值为对应的 Label 控件
-
-# 优化历史
-ld_hst = []
-LP_hst =[]
-power_hst = []
-
-# 参数
+# settings (unused or legacy removed if redundant)
 case_name = "convergence"
 file_name = case_name + ".vsp3"
 
 opb.case_name = case_name
 opb.file_name = file_name
 
-cruise_spd = 15
-
-G = 6
-SF = 2
-opb.SF = SF
-opb.G = G
-
-tess_interval = 0.016
-prop_Dia = 9
-
-tess_choice = [0.04, 0.03, 0.02, 0.013, 0.01, 0.0083, 0.0075, 0.0067, 0.0062]
+tess_choice = [0.04, 0.03, 0.02, 0.013, 0.01, 0.0083, 0.0075, 0.0067]
 conve_hst = []
 
 # 获取当前脚本所在目录
 script_dir = os.path.dirname(os.path.abspath(__file__))
 # 创建 outputs 子文件夹（如果不存在）
 output_dir = os.path.join(script_dir, "outputs")
+os.makedirs(output_dir, exist_ok=True)
 os.chdir(output_dir)
 
 
 def converge(tess):
+    vsp.ClearVSPModel()
     opb.ini_geom()
-    global iter
-    global mass
-    opb.mass = mass
-    # span, chord and taper
-    span = 0.6
-    Mean_chord = 0.16
-    CG = Mean_chord / 3 
-    taper = 0.4
-    #root and tip
+    
+    # Aircraft Parameters (opt)
+    Mean_chord = 0.197
+    taper = 0.59
+    span = 1.0
     root = 2 * Mean_chord / (1 + taper)
     tip = root * taper
-    #twist
     twist = 0
-    #prop ele
-    prop_ele = 0.01
-    #wing angle
-    wing_angle = 0
-    wing_pos["yr"] = wing_angle
-    #定义机翼
-    spanlist, chordlist, twistlist, wing_S, Cl_target = opb.think_trapwing(root, tip, span, 0.03, twist, cruise_spd)
-    #定义螺旋桨
-    prop_D= opb.place_single_prop(prop_Dia, 0.2, tess, prop_ele)
-    #创建主翼
-    Npanel = opb.create_wing(wing_pos, spanlist, chordlist, twistlist, 0, tess, airfoil_cfg)
+
+    # 1. Define Geometry
+    spanlist, chordlist, twistlist, wing_S, Cl_target = opb.think_trapwing(root, tip, span, fuse_w, twist, cruise_spd)
+    
+    # 2. Place Propellers (4 props)
+    prop_pos, prop_D_inch, Nprops = opb.place_prop(span, liftprop_Dia, tipprop_Dia, prop_ele, tess, fuse_w)
+    prop_D = np.array(prop_D_inch) * opb.inch_in_m
+    
+    # 3. Create Wing and HT
+    Npanel_wing = opb.create_wing(wing_pos, spanlist, chordlist, twistlist, 0, tess, airfoil_cfg)
+    
+    tail_span = [tail_cfg["span"]]
+    tail_chord = [tail_cfg["root"], tail_cfg["tip"]]
+    tail_twist = [0]
+    Npanel_tail = opb.create_wing(tail_pos, tail_span, tail_chord, tail_twist, opb.max_sweeploc, tess, airfoiltail_cfg)
+    
+    Npanel = Npanel_wing + Npanel_tail
     vsp.Update()
     vsp.WriteVSPFile(file_name)
 
-    # 气动分析
-    cfg["wing_S"] = wing_S
-    cfg["bref"] = 2 * span
-    cfg["cref"] = Mean_chord
-    ele_def0 = 0
-    def_cfg["Flaperon"] = 0
-    def_cfg["elevator"] = ele_def0
-
-    RPM = [4000]
-    Ct = [0.02]
-    Cp = [0.02]
-    drag, alpha, lift, netdrag1, power, _, CMy1 = opb.runaero(CG, 2, 2, 1, cruise_spd, cfg, Cl_target, opb.solver_config1,def_cfg, prop_D, RPM, Ct, Cp)
-    return(Npanel, drag, lift, CMy1)
+    # 4. Mass and Aero Setup
+    # Use mass_sim_iter to get a consistent mass for target Cl
+    y_cp = span * 0.4 # approximation for initial mass
+    mass, _ = opb.mass_sim_iter(span, wing_S, y_cp, prop_pos, spanlist, chordlist)
+    opb.mass = mass
+    
+    cfg_aero = {"wing_S": wing_S, "bref": 2 * span, "cref": Mean_chord}
+    Cl_req = mass * 9.8 / (0.5 * 1.225 * cruise_spd**2 * wing_S)
+    
+    # Calculate Prop Parameters (fixed point for convergence)
+    RPM = [4300,4400,4400,4400]
+    Ct = [0.015,0.015,0.015,0.015]
+    Cp = [0.01,0.01,0.01,0.01] 
+    
+    # 5. Run Aero
+    drag, alpha, lift, netdrag, power, _, CMy = opb.runaero(CG, 2, 2, 1, cruise_spd, cfg_aero, Cl_req, opb.solver_config1, {}, prop_D, RPM, Ct, Cp)
+    
+    return(Npanel, drag, lift, CMy)
     
 
 def main():
@@ -127,6 +124,8 @@ for col in ["drag", "lift", "CMy1"]:
     plt.ylabel(col)
     plt.title(f"{col} vs Npanel")
     plt.grid(True, linestyle="--", alpha=0.4)
+    plt.savefig(os.path.join(output_dir, f"convergence_{col}.png"))
+    print(f"Saved plot: convergence_{col}.png")
 
-plt.show()
+# plt.show()
 

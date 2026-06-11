@@ -172,8 +172,8 @@ def equal_thrust(data, thrust, req_speed, prop_property, thrust_ratio = 1):
     rho = 1.225              # 空气密度 [kg/m³]
     thrust_side = thrust/2   # 单侧机翼总推力
     if (thrust_ratio != 1):
-        small_dias = prop_property[:-1]
-        large_dia  = prop_property[-1]
+        large_dia  = prop_property[0]
+        small_dias = prop_property[1:]
     else:
         small_dias = []
         large_dia = prop_property[0]
@@ -223,7 +223,7 @@ def equal_thrust(data, thrust, req_speed, prop_property, thrust_ratio = 1):
             lo = mid
     rpm_large = 0.5*(lo+hi)
 
-    rpms = [rpm_small] * len(small_dias) + [rpm_large]
+    rpms = [rpm_large] + [rpm_small] * len(small_dias)
     # 一次性拿到所有 (CT, CP)
     results = []
     for d, rpm in zip(prop_property, rpms):

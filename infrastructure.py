@@ -31,54 +31,54 @@ solver_config0 = {"farfield":far_1, "wakenode":wakeN_1} # fast setup
 solver_config1 = {"farfield":far_2, "wakenode":wakeN_2} # slow setup
 def read_halfwing_cp():
     # 读取全文并定位表头
-    path = case_name + "_DegenGeom.lod"
+    path = case_name + ".lod"
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.read().splitlines()
     if not lines:
         raise ValueError(f"文件 {path} 为空。")
 
-    # 找第一个表头行 "Wing..."
     header_idx = None
     for i, line in enumerate(lines):
-        if re.match(r"\s*Wing\s+", line):
+        if line.strip().startswith("Iter"):
             header_idx = i
             break
     if header_idx is None:
-        raise ValueError("未找到 'Wing' 表头行。")
+        raise ValueError("未找到数据表头行（Iter...）。")
 
-    # 从表头后读取主翼部分（直到 Component 由 1 变成 2）
+    # 从表头后读取主翼部分
     data_lines = []
     for line in lines[header_idx + 1:]:
-        if not line.strip():  # 跳过空行
+        if not line.strip():
             continue
 
-        first_token = line.strip().split()[0]
-        # 当第一个数字从1变为2时，主翼数据结束
-        if first_token == '2':
+        tokens = line.strip().split()
+        if len(tokens) < 2:
+            continue
+        
+        # tokens[1] 是 VortexSheet (即 Component)
+        if tokens[1] == '2':
             break
 
         data_lines.append(line)
 
     if not data_lines:
-        raise ValueError("未找到主翼数据区段（Component=1）。")
+        raise ValueError("未找到主翼数据区段。")
 
     df = pd.read_csv(io.StringIO("\n".join([lines[header_idx]] + data_lines)),
                      sep=r"\s+", engine="python")
 
-    for col in ("Yavg", "Cl", "S", "V/Vref", "Chord"):
+    for col in ("Yavg", "Cl", "dSpan", "V/Vref", "Chord"):
         if col not in df.columns:
             raise ValueError(f"缺少列 {col}")
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Yavg", "Cl", "S", "V/Vref", "Chord"]).reset_index(drop=True)
+    df = df.dropna(subset=["Yavg", "Cl", "dSpan", "V/Vref", "Chord"]).reset_index(drop=True)
 
     # === 计算压力中心 ===
     y  = df["Yavg"].to_numpy(float)
     Cl = df["Cl"].to_numpy(float)
-    S = df["S"].to_numpy(float)
+    dS = df["dSpan"].to_numpy(float)
     V = df["V/Vref"].to_numpy(float)
     chord = df["Chord"].to_numpy(float)
-    dS = np.diff(S, prepend=0)     # prepend=0 意味着第一个差分为 S[0] - 0 = S[0]
-    dS = np.abs(dS)                # 确保为正
 
     w = Cl * dS * V ** 2
     y_cp = np.sum(w * y) / np.sum(w)
@@ -519,17 +519,16 @@ def place_prop(span, liftprop_Dia, tipprop_Dia, prop_ele, tess_int, fuse_w):
     # 计算布置间隔
     space = ((Nprops - 1) * liftprop_Dia + 0.5 * tipprop_Dia) * inch_in_m
     gap = (span - fuse_w - space) / Nprops
-    # 坐标：均匀分布的升力桨 + 翼尖桨
-    prop_pos = np.append(
-        np.linspace(gap + 0.5 * liftprop_Dia * inch_in_m + fuse_w,
-                    span - 0.5 * (tipprop_Dia + liftprop_Dia) * inch_in_m - gap,
-                    Nprops - 1), span)
-    
-    # 直径：前面是升力桨，最后是翼尖桨
-    prop_D = [liftprop_Dia] * (Nprops - 1) + [tipprop_Dia]
+    # 坐标：翼尖桨 + 均匀分布的升力桨 (从翼尖向翼根排列)
+    prop_pos = np.concatenate(([span],
+        np.linspace(span - 0.5 * (tipprop_Dia + liftprop_Dia) * inch_in_m - gap,
+                    gap + 0.5 * liftprop_Dia * inch_in_m + fuse_w,
+                    Nprops - 1)))
 
-    prop_ele = [prop_ele] * (len(prop_pos)-1)
-    prop_ele.append(0.002)
+    # 直径：第一个是翼尖桨，后面是升力桨
+    prop_D = [tipprop_Dia] + [liftprop_Dia] * (Nprops - 1)
+
+    prop_ele = [0.002] + [prop_ele] * (len(prop_pos)-1)
 
     #Add prop
     prop_id = []
@@ -575,9 +574,19 @@ def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing
     wing_S = wing_cfg["wing_S"]
     bref   = wing_cfg["bref"]
     cref   = wing_cfg["cref"]
+    Nprops = len(prop_D)
     Re = cref * air_spd * density / mu
     print("Re: " + str(Re))
     vsp.DeleteAllResults()
+    
+    # 控制 PROP 可见性
+    geom_ids = vsp.FindGeoms()
+    for geom in geom_ids:
+        type_name = vsp.GetGeomTypeName(geom).upper()
+        if type_name == "PROPELLER" or type_name == "PROP":
+            vsp.SetSetFlag(geom, vsp.SET_SHOWN, Nprops > 0)
+    vsp.Update()
+
     # Analysis: VSPAero Compute Geometry to Create Vortex Lattice DegenGeom File #
     compgeom_name = "VSPAEROComputeGeometry"
     print( compgeom_name )
@@ -586,14 +595,25 @@ def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing
     # Analysis method
     vsp.SetIntAnalysisInput( compgeom_name, "Symmetry", [2], 0 )
 
-    if (len(prop_D)):
-        vsp.SetIntAnalysisInput( compgeom_name, "GeomSet", [vsp.SET_FIRST_USER + 1], 0 )
-    else:
-        vsp.SetIntAnalysisInput( compgeom_name, "GeomSet", [vsp.SET_FIRST_USER], 0 )
     vsp.PrintAnalysisInputs( compgeom_name )
+    vsp.WriteVSPFile(file_name, vsp.SET_ALL) # 必须在 ExecAnalysis 前保存
     print( "\tExecuting..." )
     compgeom_resid = vsp.ExecAnalysis( compgeom_name)
     print( "COMPLETE" )
+    vsp.Update()
+
+    # 提取作动盘并配置性能
+    if Nprops > 0:
+        num_disks = vsp.GetNumActuatorDisks()
+        print(f"\n[INFO] Total Actuator Disks found in Analysis: {num_disks}")
+        if num_disks == Nprops:
+            for i in range(0, Nprops):
+                disk_id = vsp.FindActuatorDisk(i)
+                vsp.SetParmValUpdate( vsp.FindParm(disk_id, "RotorRPM", "Rotor"), RPM[i] )  
+                vsp.SetParmValUpdate( vsp.FindParm(disk_id, "RotorCT",  "Rotor"),  Ct[i])
+                vsp.SetParmValUpdate( vsp.FindParm(disk_id, "RotorCP",  "Rotor"),  Cp[i])
+        else:
+            print(f"Warning: Expected {Nprops} actuator disks, found {num_disks}")
 
     # Get & Display Results
     vsp.PrintResults( compgeom_resid )
@@ -611,6 +631,7 @@ def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing
     vsp.SetDoubleAnalysisInput( analysis_name, "Xcg", [CG], 0 )
     vsp.SetIntAnalysisInput( analysis_name, "NCPU", [CPU], 0 )
     vsp.SetIntAnalysisInput( analysis_name, "Symmetry", [2], 0 ) # 2 for XZ symmetry
+    vsp.SetIntAnalysisInput( analysis_name, "PropBladesMode", [0], 0 ) # Static mode for disks
     vsp.SetDoubleAnalysisInput( analysis_name, "Sref", [wing_S], 0 )
     vsp.SetDoubleAnalysisInput( analysis_name, "bref", [bref], 0 )
     vsp.SetDoubleAnalysisInput( analysis_name, "cref", [cref], 0 )
@@ -623,19 +644,6 @@ def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing
     vsp.SetIntAnalysisInput( analysis_name, "FarDistToggle", [1], 0 )
     vsp.SetDoubleAnalysisInput( analysis_name, "FarDist", [sol_config["farfield"]], 0 )
     vsp.SetIntAnalysisInput( analysis_name, "NumWakeNodes", [sol_config["wakenode"]], 0 )
-    
-    if (len(prop_D)):
-        vsp.SetIntAnalysisInput( analysis_name, "GeomSet", [vsp.SET_FIRST_USER + 1], 0 )
-        Nprops = len(prop_D)
-        vsp.SetIntAnalysisInput( analysis_name, "ActuatorDiskFlag", [1], 0 )
-        for i in range(0, Nprops):
-            disk_id = vsp.FindActuatorDisk(i)
-            vsp.SetParmVal( vsp.FindParm(disk_id, "RotorRPM", "Rotor"), RPM[i] )  
-            vsp.SetParmVal( vsp.FindParm(disk_id, "RotorCT",  "Rotor"),  Ct[i])
-            vsp.SetParmValUpdate( vsp.FindParm(disk_id, "RotorCP",  "Rotor"),  Cp[i])
-            vsp.Update()
-    else:
-        vsp.SetIntAnalysisInput( analysis_name, "GeomSet", [vsp.SET_FIRST_USER], 0 )
 
     # CS Setting 
     if angle:
@@ -650,22 +658,24 @@ def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing
                 vsp.SetParmValUpdate(defl_parm, angle[cs_name])
     #vsp.WriteVSPFile("auto.vsp3", vsp.SET_ALL)
 
+    vsp.Update()
+
     #设置完毕        
     print( "Edited input parameter: " )
     vsp.PrintAnalysisInputs( analysis_name )
-    vsp.WriteVSPFile(file_name)
+    vsp.WriteVSPFile(file_name, vsp.SET_ALL)
     # 执行分析
     print("\n[INFO] 开始执行 VSPAEROSweep 分析...")
     res_id = vsp.ExecAnalysis(analysis_name)
     print("[INFO] 分析完成")
 
     # 可选：输出结果摘要 vsp.PrintResults(res_id)
-    polar_name = case_name + "_DegenGeom.polar"
-    df = pd.read_fwf(polar_name)
+    polar_name = case_name + ".polar"
+    df = pd.read_fwf(polar_name, skiprows=2)
     # 提取需要的数据列
-    Cl_list = df['CL'].tolist()
-    Cd_list = df['CDtot'].tolist()
-    CMy_list = df['CMy'].tolist()
+    Cl_list = df['CLtot'].tolist()
+    Cd_list = df['CDi'].tolist() #only induced drag
+    CMy_list = df['CMytot'].tolist()
     #计算功率，推力
     thrust = 0
     power = 0
@@ -707,6 +717,7 @@ def cal_cg(Kn, cfg, AOA, typ_speed):
     return CG
 
 def single_point(f_cond, geo_info, config):
+    debug_log = []
     CG=geo_info["CG"]
     cfg = {"wing_S": geo_info["wing_S"], "bref": geo_info["bref"],"cref": geo_info["cref"]}
     spanlist = geo_info["spanlist"]
@@ -776,17 +787,14 @@ def single_point(f_cond, geo_info, config):
     for i in range(drag_maxit):
         alpha_this_iter = alpha 
 
-        if abs(netdrag1) < drag_tol:
-            thrust2 = thrust1    # 保持不变
+        den = (netdrag0 - netdrag1)
+        if abs(den) < 1e-4:
+            # 解析“牛顿步”：T_new = T_old + netdrag / cos(a)
+            c = max(np.cos(np.deg2rad(alpha)), 0.05)  # 防奇异
+            thrust_target = thrust1 + netdrag1 / c
         else:
-            den = (netdrag0 - netdrag1)
-            if abs(den) < 1e-4:
-                # 解析“牛顿步”：T_new = T_old + netdrag / cos(a)
-                c = max(np.cos(np.deg2rad(alpha)), 0.05)  # 防奇异
-                thrust_target = thrust1 + netdrag1 / c
-            else:
-                thrust_target = (netdrag0 * thrust1 - netdrag1 * thrust0) / den
-            thrust2 = (1 - omega_drag) * thrust1 + omega_drag * thrust_target
+            thrust_target = (netdrag0 * thrust1 - netdrag1 * thrust0) / den
+        thrust2 = (1 - omega_drag) * thrust1 + omega_drag * thrust_target
 
         # 升降舵
         if (abs(CMy1) < mom_tol) or (abs(CMy0 - CMy1) < 1e-4):
@@ -806,6 +814,18 @@ def single_point(f_cond, geo_info, config):
         # 计算本次迭代产生的误差 ---
         netdrag2 = netdrag2 + d0
         lift_error2 = lift2 - (mass * g)
+
+        debug_log.append({
+            "Iteration": i + 1,
+            "Alpha": alpha,
+            "Lift": lift2,
+            "Drag": drag,
+            "Thrust": thrust2,
+            "Weight": mass * g,
+            "CMy": CMy2,
+            "Elevator": ele_def2,
+            "NetDrag": netdrag2
+        })
 
         # 检查是否收敛 ---
         if (abs(netdrag2) < drag_tol) and (abs(lift_error2) < lift_tol):
@@ -829,24 +849,26 @@ def single_point(f_cond, geo_info, config):
                 continue
 
             # 用 lift 的割线斜率做一次牛顿步 + 动态松弛 + 步长限幅
+            # 物理保护：设定物理斜率的上下限，防止推力耦合干扰导致步长过小或方向错误
+            q_inf = 0.5 * density * speed**2
+            dL_dalpha_min = 0.05 * wing_S * q_inf  # 每度约 5% CL 增量的保守底线
+            dL_dalpha_max = 0.15 * wing_S * q_inf  # 每度约 15% CL 增量的物理顶线
+            
             if i < 1 or (alpha0 is None) or (L0 is None) or abs(alpha1 - alpha0) < 1e-4:
-                # 历史不足：用比例法的小步修正
-                S_alpha_guess = max(abs(lift2) / max(abs(alpha1), 1e-3), 1.0)  # 局部斜率保守估计
+                # 历史不足：用比例法的小步修正，但限制斜率上限以防步长过小
+                S_alpha_guess = abs(lift2) / max(abs(alpha1), 1e-3)
+                S_alpha_guess = np.clip(S_alpha_guess, dL_dalpha_min, dL_dalpha_max)
                 delta_alpha = (mass * g - lift2) / max(S_alpha_guess, 1e-4)
             else:
                 dL_dalpha = (L1 - L0) / (alpha1 - alpha0)
-                if abs(dL_dalpha) < 1e-4:
-                    delta_alpha = np.sign(mass * g - lift2) * 0.2
-                else:
-                    delta_alpha = (mass * g - lift2) / dL_dalpha
+                # 如果估算的斜率不物理（太小、为负、或因数据点过近导致极大），强制限制在物理区间
+                dL_dalpha = np.clip(dL_dalpha, dL_dalpha_min, dL_dalpha_max)
+                
+                delta_alpha = (mass * g - lift2) / dL_dalpha
 
             # 步长限幅 + 抑制震荡
             delta_alpha = np.clip(delta_alpha, -max_step, max_step)
             alpha_target = alpha1 + delta_alpha
-
-            lift_err_prev = (L0 - mass * g) if (L0 is not None) else None
-            if (lift_err_prev is not None) and (lift_err_prev * (lift2 - mass * g) < 0):
-                omega_lift = 0.25 * omega_lift
 
             alpha = (1.0 - omega_lift) * alpha1 + omega_lift * alpha_target
         else:
@@ -856,6 +878,11 @@ def single_point(f_cond, geo_info, config):
         print("Warning: Did not converge within the maximum number of iterations.")
 
     mass_result = {"mass":mass, "wing_mass":wing_mass}
+    if debug_log:
+        speed = f_cond.get("speed", 0)
+        filename = f"convergence_{case_name}_V{speed:.1f}.csv"
+        pd.DataFrame(debug_log).to_csv(filename, index=False)
+        print(f"Convergence log saved to {filename}")
     return lift2, drag, power, alpha_this_iter, RPM, thrust2, mass_result, ele_def2
 
 if __name__ == "__main__":
