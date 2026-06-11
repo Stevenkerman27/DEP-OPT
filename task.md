@@ -1,0 +1,6 @@
+当前代码为openvsp3.41版本的API编写，现在需要更新至openvsp3.50。主要的变化为作动盘设置，参考OpenVSP3.50_API_Notes.md和disktest.py. 
+
+1. 修改disktest.py验证openvsp API原有函数的控制面逻辑是否工作正常。参考infrastructure.py中的老版本控制面逻辑。让测试代码生成一段矩形机翼上的两个展向位置上不同尺寸不同转速的螺旋桨（全机4个螺旋桨），再在机翼后缘添加20度的控制面并偏转。注意关闭机翼对称，打开vspaero的全局XZ对称，参考现有代码实现。保留气动分析代码，运行气动分析并让用户确认运行结果
+
+
+2. 修改infrastructure适配新版本，确保evaluate.py可以正常工作 注意openvsp api的行为较为诡异，修改代码是渐进修改

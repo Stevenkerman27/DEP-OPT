@@ -1,5 +1,5 @@
 Chinese character involved in this project, mind encoding!
-使用myml python环境,位于D:\Software\anaconda\envs\myml
+使用vsppytools python环境
 我需要你帮助我开发使用OpenVSP的分布式电推进飞机设计框架
 当前终端为powershell 5.1, 不支持 && 以及||操作符
 
