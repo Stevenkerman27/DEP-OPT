@@ -1,0 +1,318 @@
+[BladeElement] - Export a propeller in a blade element format
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+string       BEMFileName                File name for BEM file.                                                               
+int          ExportBEMFlag              Flag to control whether a BEM file is written.                         0              
+string       PropID                     GeomID of propeller.                                                                  
+
+[CfdMeshAnalysis] - Generate CFD surface mesh of model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+double       BaseLen                    Maximum target edge length.                                            0.5            
+int          ExportRawFlag              Flag to export raw intersection points.                                0              
+int          FACETFileFlag              Flag to enable FACET file export.                                      1              
+string       FACETFileName              File name for FACET file export.                                       c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.facet
+int          GMSHFileFlag               Flag to enable GMSH file export.                                       1              
+string       GMSHFileName               File name for GMSH file export.                                        c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.msh
+int          GenerateHalfMesh           Flag to generate a half mesh in +Y domain.                             0              
+double       GrowthRatio                Maximum edge length growth ratio.                                      1.3            
+int          IntersectSubSurfs          Flag to include subsurfaces in model.                                  1              
+double       MaxGap                     Maximum sagitta of circle inscribed to local curvature.                0.005          
+double       MinLen                     Minimum target edge length.                                            0.1            
+double       NCircSeg                   Number of segments to divide a circle inscribed to local curvature.    16.0           
+int          OBJFileFlag                Flag to enable OBJ file export.                                        1              
+string       OBJFileName                File name for OBJ file export.                                         c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.obj
+int          POLYFileFlag               Flag to enable Poly file export.                                       1              
+string       POLYFileName               File name for Poly file export.                                        c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.poly
+double       RelCurveTol                Tolerance used when constructing binary adapted curves.                0.01           
+int          RigorLimit                 Flag to enable rigorous growth limiting across 3D space.               0              
+int          STLFileFlag                Flag to enable STL file export.                                        1              
+string       STLFileName                File name for STL file export.                                         c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.stl
+int          SelectedDegenSetIndex      Degenerate (thin) geometry set for analysis.                           -1             
+int          SelectedSetIndex           Normal (thick) geometry set for analysis.                              0              
+int          TRIFileFlag                Flag to enable TRI file export.                                        1              
+string       TRIFileName                File name for TRI file export.                                         c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.tri
+int          TaggedMultiSolid           Flag to enable non-standard tagged multi-solid STL file export.        0              
+int          XYZIntCurveFlag            Flag to include X,Y,Z intersection curves in *.srf file.               0              
+
+[CompGeom] - Compute watertight triangle mesh via constructive solid geometry and compute wetted areas and volumes.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          DegenSet                   Degenerate geometry Set for analysis.                                  -1             
+int          HalfMeshFlag               Flag to control whether Y >= 0 half mesh is generated.                 0              
+int          Set                        Normal geometry Set for analysis.                                      0              
+int          SubSurfFlag                Flag to control whether subsurfaces are used in analysis.              1              
+int          WriteCSVFlag               Flag to control whether CSV file is written.                           1              
+
+[CpSlicer] - Post-process VSPAERO solution to produce Cp slices
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          AnalysisMethod             Flag to indicate analysis method (thin vs. thick).                     0              
+double       XSlicePosVec               Vector of X slices.                                                    ()             
+double       YSlicePosVec               Vector of Y slices.                                                    ()             
+double       ZSlicePosVec               Vector of Z slices.                                                    ()             
+
+[DegenGeom] - Compute degenerate geometry representations of model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          Set                        Geometry Set for analysis.                                             0              
+int          WriteCSVFlag               Flag to control whether CSV file is written.                           1              
+int          WriteMFileFlag             Flag to control whether Matlab file is written.                        1              
+
+[EmintonLord] - Perform Eminton-Lord integration of area distribution to compute wave drag.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+double       Area_vec                   Area distribution observations.                                        ()             
+double       X_vec                      Stations for area observations.                                        ()             
+
+[FeaMeshAnalysis] - Generate structure parts and finite element mesh of model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+double       BaseLen                    Maximum target edge length.                                            0.5            
+int          CADLabelDelim              Delimiter enum to separate components of CAD surface label.            0              
+int          CADLabelID                 Flag to include GeomID in CAD surface label.                           1              
+int          CADLabelName               Flag to include Geom name in CAD surface label.                        1              
+int          CADLabelSplitNo            Flag to include surface split number in CAD surface label.             1              
+int          CADLabelSurfNo             Flag to include surface number in CAD surface label.                   1              
+int          CADLenUnit                 Model length unit enum included in CAD file export.                    4              
+int          CALCULIXFileFlag           Flag to enable CalculiX file export.                                   1              
+string       CALCULIXFileName           File name for CalculiX file export.                                                   
+int          CURVFileFlag               Flag to enable CURV file export.                                       1              
+string       CURVFileName               File name for CURV file export.                                                       
+int          ExportRawFlag              Flag to export raw intersection points.                                0              
+int          GMSHFileFlag               Flag to enable GMSH file export.                                       1              
+string       GMSHFileName               File name for GMSH file export.                                                       
+double       GrowthRatio                Maximum edge length growth ratio.                                      1.3            
+int          HalfMeshFlag               Flag to generate a half mesh in +Y domain.                             0              
+int          IGESFileFlag               Flag to enable IGES file export.                                       1              
+string       IGESFileName               File name for IGES file export.                                                       
+int          MASSFileFlag               Flag to enable MASS file export.                                       1              
+string       MASSFileName               File name for MASS file export.                                                       
+double       MaxGap                     Maximum sagitta of circle inscribed to local curvature.                0.005          
+double       MinLen                     Minimum target edge length.                                            0.025          
+int          NASTRANFileFlag            Flag to enable NASTRAN file export.                                    1              
+string       NASTRANFileName            File name for NASTRAN file export.                                                    
+double       NCircSeg                   Number of segments to divide a circle inscribed to local curvature.    16.0           
+int          NKEYFileFlag               Flag to enable NASTRAN Key file export.                                1              
+string       NKEYFileName               File name for NASTRAN Key file export.                                                
+int          P3DFileFlag                Flag to enable Plot3D file export.                                     1              
+string       P3DFileName                File name for Plot3D file export.                                                     
+double       RelCurveTol                Tolerance used when constructing binary adapted curves.                0.005          
+int          RigorLimit                 Flag to enable rigorous growth limiting across 3D space.               0              
+int          SRFFileFlag                Flag to enable SRF file export.                                        1              
+string       SRFFileName                File name for SRF file export.                                                        
+int          STEPFileFlag               Flag to enable STEP file export.                                       1              
+string       STEPFileName               File name for STEP file export.                                                       
+int          STEPRepresentation         Flag to control whether STEP representation is shell or BREP solid.    1              
+double       STEPTol                    Tolerance output to STEP files.                                        1e-06          
+int          STLFileFlag                Flag to enable STL file export.                                        1              
+string       STLFileName                File name for STL file export.                                                        
+int          XYZIntCurveFlag            Flag to include X,Y,Z intersection curves in *.srf file.               0              
+
+[MassProp] - Compute mass properties of model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          MassSliceDir               Direction for mass property slicing.                                   0              
+int          NumMassSlices              Number of slices.                                                      20             
+int          Set                        Geometry Set for analysis.                                             0              
+
+[ParasiteDrag] - Compute parasite drag buildup of a model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          AltLengthUnit              Altitude length unit enum.                                             0              
+double       Altitude                   Altitude.                                                              3000.0         
+double       DeltaTemp                  Temperature deviation.                                                 0.0            
+double       Density                    Density.                                                               0.0021750959698769545
+double       DynaVisc                   Dynamic viscoscity                                                     3.6769995286356176e-07
+int          ExportSubCompFlag          Flag to export sub components.                                         0              
+string       FileName                   File name.                                                             c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A_ParasiteBuildUp.csv
+int          FreestreamPropChoice       Freestream property input mode choice.                                 0              
+int          GeomSet                    Geometry Set for analysis.                                             0              
+double       KineVisc                   Kinematic viscoscity                                                   0.0001690499904169114
+int          LamCfEqnChoice             Laminar skin friction coefficient equation enum.                       0              
+int          LengthUnit                 Model length unit enum.                                                2              
+double       Mach                       Mach.                                                                  0.0890817992489726
+int          PresUnit                   Pressure unit enum.                                                    0              
+double       Pressure                   Pressure.                                                              1896.6407475499288
+double       Re_L                       Reynolds number per unit length.                                       1910188.2922614333
+int          RecomputeGeom              Flag to recompute geometry.                                            1              
+int          RefFlag                    Flag to control how reference quantities are set.                      1              
+double       SpecificHeatRatio          Ratio of specific heats                                                1.4            
+double       Sref                       Reference area.                                                        17.88185312625759
+int          TempUnit                   Temperature unit enum.                                                 2              
+double       Temperature                Temperature.                                                           48.301519999999925
+int          TurbCfEqnChoice            Trubulent skin friction coefficient equation enum.                     6              
+int          VelocityUnit               Airspeed unit enum.                                                    1              
+double       Vinf                       Airspeed.                                                              30.0           
+string       WingID                     Reference wing GeomID.                                                                
+
+[PlanarSlice] - Generate array of planar slices of model and calculate areas.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          AutoBoundFlag              Flag to enable automatic bounds calculation.                           1              
+double       EndVal                     Ending coordinate for slicing.                                         10.0           
+int          MeasureDuct                Flag to enable measure duct mode.                                      0              
+array        Norm                       Slice normal vector.                                                   <openvsp.vsp.vec3d; proxy of <Swig Object of type 'vec3d *' at 0x000002A9FFCC71E0> >
+int          NumSlices                  Number of slices.                                                      10             
+int          Set                        Geometry Set for analysis.                                             0              
+double       StartVal                   Starting coordinate for slicing.                                       0.0            
+
+[Projection] - Compute projected area of model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+string       BoundaryGeomID             Boundary GeomID.                                                                      
+int          BoundarySet                Boundary geometry Set for analysis.                                    0              
+int          BoundaryType               Boundary type enum.                                                    0              
+array        Direction                  Direction vector.                                                      <openvsp.vsp.vec3d; proxy of <Swig Object of type 'vec3d *' at 0x000002A9FFCC71E0> >
+string       DirectionGeomID            Direction GeomID.                                                                     
+int          DirectionType              Projection direction enum.                                             0              
+string       TargetGeomID               Target GeomID.                                                                        
+int          TargetSet                  Target geometry Set for analysis.                                      0              
+int          TargetType                 Target type enum.                                                      0              
+
+[SurfaceIntersection] - Intersect surfaces and generate CAD-exchange files including BREP solids.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          CADLabelDelim              Delimiter enum to separate components of CAD surface label.            0              
+int          CADLabelID                 Flag to include GeomID in CAD surface label.                           1              
+int          CADLabelName               Flag to include Geom name in CAD surface label.                        1              
+int          CADLabelSplitNo            Flag to include surface split number in CAD surface label.             1              
+int          CADLabelSurfNo             Flag to include surface number in CAD surface label.                   1              
+int          CADLenUnit                 Model length unit enum included in CAD file export.                    4              
+int          CURVFileFlag               Flag to enable CURV file export.                                       1              
+string       CURVFileName               File name for CURV file export.                                        c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.curv
+int          ExportRawFlag              Flag to export raw intersection points.                                0              
+int          IGESFileFlag               Flag to enable IGES file export.                                       1              
+string       IGESFileName               File name for IGES file export.                                        c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.igs
+int          IntersectSubSurfs          Flag to include subsurfaces in model.                                  1              
+int          P3DFileFlag                Flag to enable Plot3D file export.                                     1              
+string       P3DFileName                File name for Plot3D file export.                                      c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.p3d
+double       RelCurveTol                Tolerance used when constructing binary adapted curves.                0.01           
+int          SRFFileFlag                Flag to enable SRF file export.                                        1              
+string       SRFFileName                File name for SRF file export.                                         c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.srf
+int          STEPFileFlag               Flag to enable STEP file export.                                       1              
+string       STEPFileName               File name for STEP file export.                                        c:/Users/mtkbirdman/OneDrive/Documents/OpenVSP/G103A/G103A.stp
+int          STEPRepresentation         Flag to control whether STEP representation is shell or BREP solid.    1              
+double       STEPTol                    Tolerance output to STEP files.                                        1e-06          
+int          SelectedDegenSetIndex      Degen (thin) geometry set for analysis.                                -1             
+int          SelectedSetIndex           Normal (thick) geometry set for analysis.                              0              
+
+[SurfacePatches] - Compute structured grid of points and normals for all surface patches.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          Set                        Geometry Set for analysis.                                             0              
+
+[VSPAEROComputeGeometry] - Prepare a watertight triangle mesh for VSPAERO analysis.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          AlternateInputFormatFlag   Flag to use alternate input file format.                               0              
+int          AnalysisMethod             Flag to indicate analysis method (thin vs. thick).                     0              
+int          GeomSet                    Geometry Set for analysis.                                             0              
+int          Symmetry                   Symmetry mode enum.                                                    1              
+
+[VSPAERODegenGeom] - Prepare a degen geometry for VSPAERO analysis.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          GeomSet                    Geometry Set for analysis.                                             0              
+
+[VSPAEROReadPreviousAnalysis] - Read prior VSPAERO analysis from file.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+[VSPAEROSinglePoint] - Perform VSPAERO analysis at a single flow condition.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+[VSPAEROSweep] - Perform VSPAERO calculation while sweeping flow condition.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+int          2DFEMFlag                  Flag to write 2D FEM file.                                             0              
+int          ActuatorDiskFlag           Flag to model propellers or rotors as actuator disks.                  0              
+double       AlphaEnd                   Alpha sweep end point.                                                 12.0           
+int          AlphaNpts                  Number of points in alpha sweep.                                       9              
+double       AlphaStart                 Alpha sweep starting point.                                            -4.0           
+int          AlternateInputFormatFlag   Flag to use alternate input file format.                               0              
+int          AnalysisMethod             Flag to indicate analysis method (thin vs. thick).                     0              
+int          AutoTimeNumRevs            Number of desired revolutions for computing automatic time step.       5              
+int          AutoTimeStepFlag           Flag to automatically determine time step.                             1              
+double       BetaEnd                    Beta sweep end point.                                                  0.0            
+int          BetaNpts                   Number of points in Beta sweep.                                        1              
+double       BetaStart                  Beta sweep starting point.                                             0.0            
+int          CGGeomSet                  Geometry set for center of gravity computation.                        0              
+double       Clmax                      CL max value.                                                          -1.0           
+int          ClmaxToggle                Flag to enable stall model.                                            0              
+double       FarDist                    Far field distance.                                                    -1.0           
+int          FarDistToggle              Far field distance toggle.                                             0              
+int          FixedWakeFlag              Flag to use fixed wake with no relaxation.                             0              
+int          FromSteadyState            Start unsteady solution from steady state.                             0              
+int          GeomSet                    Geometry Set for analysis.                                             0              
+double       GroundEffect               Height aboe ground.                                                    -1.0           
+int          GroundEffectToggle         Flag to enable ground effect model.                                    0              
+double       HoverRamp                  Hover ramp value.                                                      0.0            
+int          HoverRampFlag              Flag to enable hover ramp.                                             0              
+int          KTCorrection               Compressibility correction enum.                                       0              
+double       MachEnd                    Mach number sweep end point.                                           0.1            
+int          MachNpts                   Number of points in Mach number sweep.                                 1              
+double       MachStart                  Mach number sweep starting point.                                      0.0            
+double       Machref                    Reference Mach number.                                                 0.3            
+int          ManualVrefFlag             Flag to enable setting Vref different from Vinf.                       0              
+int          MassSliceDir               Slicing direction for mass properties.                                 0              
+double       MaxTurnAngle               Max turning angle value.                                               -1.0           
+int          MaxTurnToggle              Flag to enable max turning model.                                      0              
+int          NCPU                       Number of processors to use for computation.                           4              
+int          NoiseCalcFlag              Flag to enable noise calculations.                                     0              
+int          NoiseCalcType              Noise calculation type enum.                                           0              
+int          NoiseUnits                 Units ot use for noise calculations.                                   0              
+int          NumMassSlice               Number of slices for CG computation.                                   10             
+int          NumTimeSteps               Number of time steps in unsteady simulation.                           100            
+int          NumWakeNodes               Number of wake nodes.                                                  64             
+int          Precondition               Matrix preconditioner mode enum.                                       0              
+double       ReCref                     Reynolds number sweep starting point.                                  4400000.0      
+double       ReCrefEnd                  Reynolds number sweep end point.                                       20000000.0     
+int          ReCrefNpts                 Number of points in Reynolds number sweep.                             1              
+string       RedirectFile               File to redirect output ('stdout' to console,  '' to suppress).        stdout         
+int          RefFlag                    Flag to control how reference quantities are set.                      1              
+double       Rho                        Freestream density.                                                    0.002377       
+int          RotateBladesFlag           Flag to model propellers or rotors as unsteady rotating blades.        0              
+double       Sref                       Reference area.                                                        17.88185312625759
+int          Symmetry                   Symmetry mode enum.                                                    1              
+double       TimeStepSize               Unsteady time step.                                                    0.00125        
+int          UnsteadyType               Stability and control mode enum.                                       0              
+double       Vinf                       Freestream airspeed.                                                   30.0           
+double       Vref                       Reference airspeed.                                                    30.0           
+int          WakeNumIter                Number of wake iterations.                                             5              
+string       WingID                     Reference wing GeomID.                                                                
+double       Xcg                        X moment reference point.                                              2.8699999999999997
+double       Ycg                        Y moment reference point.                                              0.0            
+double       Zcg                        Z moment reference point.                                              0.164          
+double       bref                       Reference span.                                                        17.536552870371967
+double       cref                       Reference chord.                                                       0.9963858788629476
+
+[WaveDrag] - Compute the wave drag of a model.
+------------------------------------------------------------------------------------------------------------------------------------------------
+input_type   input                      input_doc                                                              input_default  
+------------------------------------------------------------------------------------------------------------------------------------------------
+double       Mach                       Mach number.                                                           1.5            
+int          NumRotSects                Number of slices around influence cone.                                10             
+int          NumSlices                  Number if axial slices.                                                20             
+string       SSFlow_vec                 Propulsive face subsurface ID's.                                       ()             
+int          Set                        Geometry Set for analysis.                                             0              
+int          SymmFlag                   Symmetry flag.              
