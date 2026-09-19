@@ -29,6 +29,9 @@ LP_hst =[]
 alpha_hst = []
 thrust_hst=[]
 lift_hst = []
+di_hst = []
+dp_wing_hst = []
+dp_others_hst = []
 clean_drag_hst = []
 landing_drag_hst = []
 landing_thrust_hst=[]
@@ -51,8 +54,8 @@ typ_speed = 12
 max_AOA = 10
 density = 1.225
 opb.density = density
-cD0 = 0.027
-cD0_S = 0.401
+cD0 = 0.01
+cD0_S = 0.4
 G = 5
 SF = 1.5
 n_ult = G * SF
@@ -63,7 +66,7 @@ opb.g = g
 
 #analysis parameter
 tess_interval = 0.01
-drag_maxit = 5
+drag_maxit = 9 #higher for landing
 omega_lift = 0.7
 omega_drag = 0.7
 max_step = 0.5  # deg
@@ -147,23 +150,27 @@ print("CG: " + str(CG))
 for n in condition:
     max_AOA = max_AOA - wing_pos["yr"]
     speed = n[0]
-    d0 = opb.D0(cD0, speed, cD0_S) 
+    # Calculate parasitic drag for other components
+    d0_others = opb.D0(cD0, speed, cD0_S)
     thrust_ratio = n[2]
     Cl_target =  mass * g / (0.5 * density * speed**2 * wing_S)
     def_cfg["Flaperon"] = n[1]
 
-    flight_condition = {"speed": speed, "max_AOA":max_AOA, "Cl_target":Cl_target, "TR": thrust_ratio, "d0":d0 }
-    geo_info = {"spanlist":spanlist, "chordlist":chordlist, "span":span, "wing_S":wing_S, "bref":Mean_chord, "cref":2*span,
-                "CG": CG, "def_cfg": def_cfg, "prop_D":prop_D,"prop_D_inch":prop_D_inch, "prop_pos":prop_pos}
+    flight_condition = {"speed": speed, "max_AOA":max_AOA, "Cl_target":Cl_target, "TR": thrust_ratio, "d0_others":d0_others }
+    geo_info = {"spanlist":spanlist, "chordlist":chordlist, "span":span, "wing_S":wing_S, "bref":2*span, "cref":Mean_chord,
+                "CG": CG, "def_cfg": def_cfg, "prop_D":prop_D,"prop_D_inch":prop_D_inch, "prop_pos":prop_pos, "t_over_c": airfoil_cfg["ThickChord"]}
     config={"max_it":drag_maxit, "tol":[0.03, 0.01, 0.01], "relax":[omega_drag, omega_lift], "max_alpha_step":max_step,"propdata":prop_data} 
     # 2 options of accuracy for wake, tol and fcators in sequence of drag, lift, moment, relaxtion factor in sequence of drag and lift
-    lift, drag, power, alpha, RPM, thrust, mass_result, _ = opb.single_point(flight_condition, geo_info, config)
+    lift, drag, power, alpha, RPM, thrust, mass_result, _, d0_wing = opb.single_point(flight_condition, geo_info, config)
 
     mass = mass_result["mass"]
     wing_mass = mass_result["wing_mass"]
     #修正升力
     lift_hst.append(lift)
-    LD = lift / (drag + d0)
+    di_hst.append(drag)
+    dp_wing_hst.append(d0_wing)
+    dp_others_hst.append(d0_others)
+    LD = lift / (drag + d0_others + d0_wing)
     ld_hst.append(LD)
     eff = mass / power
     power_hst.append(power)
@@ -179,6 +186,9 @@ with open('history.csv', 'w', encoding='utf-8', newline='') as f:
     writer.writerow(['LD_hst'] + ld_hst)
     writer.writerow(['LP_hst'] + LP_hst)
     writer.writerow(['Lift_hst'] + lift_hst)
+    writer.writerow(['Di_hst'] + di_hst)
+    writer.writerow(['Dp_wing_hst'] + dp_wing_hst)
+    writer.writerow(['Dp_others_hst'] + dp_others_hst)
     writer.writerow(['RPM'] + RPM_hst)
     writer.writerow(['POWER'] + power_hst)
     writer.writerow(['AOA'] + alpha_hst)
