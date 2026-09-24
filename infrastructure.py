@@ -1,89 +1,153 @@
 import openvsp as vsp
-from scipy.interpolate import CubicSpline
 import math
 import numpy as np
 import pandas as pd
 import re, io
+import os
+import json
+import subprocess
+import sys
+import tempfile
+import shutil
+import uuid
 import prop
+import config as project_config
+import stall_limit
 import warnings
 # This is for vsp3.41!!!
-density = 1.225
-mu = 1.85e-5
-inch_in_m = 0.0254
-max_sweeploc = 0.9954
+density = project_config.DENSITY
+mu = project_config.MU
+inch_in_m = project_config.INCH_IN_M
+max_sweeploc = project_config.MAX_SWEEP_LOCATION
 case_name = "test"
 file_name = "test.vsp3"
-G = 7
-SF = 2
-g = 9.8
+G = project_config.ULTIMATE_LOAD_FACTOR
+SF = project_config.SAFETY_FACTOR
+g = project_config.G
 
 mass = 3
-mass_prop = {"S_density": 2, "CF_Strength": 400e6, "CF_rho": 2000, "fuse_mass": 1.2, "prop": [0.05,0.05,0.05,0.12], "payload": 0.3}
-D_min = 5
-D_max = 20
+mass_prop = dict(project_config.MASS_PROP)
+D_min = project_config.D_MIN_MM
+D_max = project_config.D_MAX_MM
 
-CPU = 6
-far_1 = 3
-far_2 = 10
-wakeN_1 = 16
-wakeN_2 = 32
-solver_config0 = {"farfield":far_1, "wakenode":wakeN_1} # fast setup
-solver_config1 = {"farfield":far_2, "wakenode":wakeN_2} # slow setup
-def read_halfwing_cp():
-    # 读取全文并定位表头
-    path = case_name + "_DegenGeom.lod"
+CPU = project_config.VSPAERO_CPU
+VSPAERO_WORKER_TIMEOUT_SECONDS = project_config.VSPAERO_WORKER_TIMEOUT_SECONDS
+far_1 = project_config.VSPAERO_FARFIELD_FAST
+far_2 = project_config.VSPAERO_FARFIELD_FINAL
+wakeN_1 = project_config.VSPAERO_WAKE_NODES_FAST
+wakeN_2 = project_config.VSPAERO_WAKE_NODES_FINAL
+solver_config0 = dict(project_config.VSPAERO_SOLVER_FAST)
+solver_config1 = dict(project_config.VSPAERO_SOLVER_FINAL)
+VSPAERO_WING_GEOM_SET = vsp.SET_FIRST_USER
+VSPAERO_PROP_GEOM_SET = vsp.SET_FIRST_USER + 1
+VSPAERO_FUSELAGE_GEOM_SET = vsp.SET_FIRST_USER + 2
+VSPAERO_THICK_GEOM_SET = VSPAERO_FUSELAGE_GEOM_SET
+# OpenVSP 3.51 keeps PROP actuator disks only when the propeller geometry is
+# included in the thin geometry set.  A no-propeller solve must exclude them.
+VSPAERO_NO_PROP_THIN_GEOM_SET = VSPAERO_WING_GEOM_SET
+VSPAERO_PROP_THIN_GEOM_SET = vsp.SET_ALL
+VSPAERO_NO_GEOM_SET = vsp.SET_NONE
+vspaero_geometry_signature = None
+def get_lod_df():
+    path = None
+    for candidate in (case_name + ".lod", case_name + "_DegenGeom.lod"):
+        if os.path.exists(candidate):
+            path = candidate
+            break
+    if path is None:
+        return None
+
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.read().splitlines()
     if not lines:
-        raise ValueError(f"文件 {path} 为空。")
+        return None
 
-    # 找第一个表头行 "Wing..."
     header_idx = None
+    header_type = None
     for i, line in enumerate(lines):
+        if line.strip().startswith("Iter"):
+            header_idx = i
+            header_type = "iter"
+            break
         if re.match(r"\s*Wing\s+", line):
             header_idx = i
+            header_type = "wing"
             break
     if header_idx is None:
-        raise ValueError("未找到 'Wing' 表头行。")
+        return None
 
-    # 从表头后读取主翼部分（直到 Component 由 1 变成 2）
     data_lines = []
     for line in lines[header_idx + 1:]:
-        if not line.strip():  # 跳过空行
+        if not line.strip():
             continue
-
-        first_token = line.strip().split()[0]
-        # 当第一个数字从1变为2时，主翼数据结束
-        if first_token == '2':
+        tokens = line.strip().split()
+        if not tokens:
+            continue
+        component = tokens[1] if header_type == "iter" and len(tokens) > 1 else tokens[0]
+        if component == "2":
             break
-
         data_lines.append(line)
-
     if not data_lines:
-        raise ValueError("未找到主翼数据区段（Component=1）。")
+        return None
 
     df = pd.read_csv(io.StringIO("\n".join([lines[header_idx]] + data_lines)),
                      sep=r"\s+", engine="python")
+    required = ("Yavg", "Cl", "V/Vref", "Chord")
+    if any(column not in df.columns for column in required):
+        return None
+    if "dArea" not in df.columns and "S" not in df.columns:
+        return None
 
-    for col in ("Yavg", "Cl", "S", "V/Vref", "Chord"):
-        if col not in df.columns:
-            raise ValueError(f"缺少列 {col}")
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Yavg", "Cl", "S", "V/Vref", "Chord"]).reset_index(drop=True)
+    for column in required:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    if "dArea" in df.columns:
+        df["dArea"] = pd.to_numeric(df["dArea"], errors="coerce")
+    else:
+        df["S"] = pd.to_numeric(df["S"], errors="coerce")
+        df["dArea"] = np.abs(np.diff(df["S"].to_numpy(float), prepend=0.0))
+    df = df.dropna(subset=["Yavg", "Cl", "V/Vref", "Chord", "dArea"]).reset_index(drop=True)
+    return df
 
-    # === 计算压力中心 ===
-    y  = df["Yavg"].to_numpy(float)
+def read_halfwing_cp():
+    df = get_lod_df()
+    if df is None:
+        raise ValueError("无法获取 .lod 数据")
+
+    y = df["Yavg"].to_numpy(float)
     Cl = df["Cl"].to_numpy(float)
-    S = df["S"].to_numpy(float)
+    dA = df["dArea"].to_numpy(float)
     V = df["V/Vref"].to_numpy(float)
-    chord = df["Chord"].to_numpy(float)
-    dS = np.diff(S, prepend=0)     # prepend=0 意味着第一个差分为 S[0] - 0 = S[0]
-    dS = np.abs(dS)                # 确保为正
-
-    w = Cl * dS * V ** 2
+    w = Cl * dA * V ** 2
     y_cp = np.sum(w * y) / np.sum(w)
 
     return y_cp
+
+def calculate_parasite_drag_from_lod(Vref, t_over_c):
+    if t_over_c is None:
+        return 0.0
+    df = get_lod_df()
+    if df is None:
+        return 0.0
+
+    V_local = df["V/Vref"].to_numpy(float) * Vref
+    chord = df["Chord"].to_numpy(float)
+    dA = df["dArea"].to_numpy(float)
+    Re = np.maximum((density * V_local * chord) / mu, 1e5)
+    cf = 0.455 / (np.log10(Re) ** 2.58)
+    ff = 1.0 + 1.2 * t_over_c + 100.0 * (t_over_c ** 4)
+    s_wet_local = 2.003 * dA * (1.0 + 0.25 * t_over_c)
+    dp_local = 0.5 * density * V_local ** 2 * s_wet_local * cf * ff
+    return np.sum(dp_local) * 2
+
+def calculate_parasite_drag(V, chord, S_ref, t_over_c):
+    if t_over_c is None:
+        return 0.0, 0.0
+    Re = max(density * V * chord / mu, 1e5)
+    cf = 0.455 / (math.log10(Re) ** 2.58)
+    ff = 1.0 + 1.2 * t_over_c + 100.0 * (t_over_c ** 4)
+    s_wet = 2.003 * S_ref * (1.0 + 0.25 * t_over_c)
+    cd_p = s_wet / S_ref * cf * ff
+    return cd_p, 0.5 * density * V ** 2 * s_wet * cf * ff
 
 def tb_wingbox_mass(
     n_ult: float,         # 极限载荷因子
@@ -187,6 +251,8 @@ def _rdp(points, eps):
         return [start, end]
 
 def FFD_wing(chord, tip, span, twist, prop_pos, prop_D, ctrl, ctrl_dist, air_spd, eps=2e-3):
+    from scipy.interpolate import CubicSpline
+
     # 1. 构造控制点
     ctrl_pts = [[0, chord]]
     for n in range(len(prop_pos)):
@@ -232,11 +298,12 @@ def FFD_wing(chord, tip, span, twist, prop_pos, prop_D, ctrl, ctrl_dist, air_spd
     return spanlist, chordlist, twistlist, wing_S, Cl_target
 
 def think_trapwing(root, tip, span,fuse_w, twist, air_spd):
-    spanlist = [fuse_w, span - fuse_w]
     if (fuse_w == 0):
+        spanlist = [span]
         chordlist = [root, tip]
         twistlist = [twist]
     else: 
+        spanlist = [fuse_w, span - fuse_w]
         chordlist = [root, root, tip]
         twistlist = [0,twist]
     wing_S = 0
@@ -374,9 +441,12 @@ def refine_wing_mesh(chordlist: list, spanlist: list, prop_pos_list: list, prop_
     return spanlist_refined, chordlist_refined, twistlist_refined, wing_S, Cl_target
 
 def ini_geom():
+    global vspaero_geometry_signature
     vsp.ClearVSPModel()
-    vsp.SetSetName(vsp.SET_FIRST_USER, "wing")
-    vsp.SetSetName(vsp.SET_FIRST_USER + 1, "prop")
+    vspaero_geometry_signature = None
+    vsp.SetSetName(VSPAERO_WING_GEOM_SET, "wing")
+    vsp.SetSetName(VSPAERO_PROP_GEOM_SET, "prop")
+    vsp.SetSetName(VSPAERO_FUSELAGE_GEOM_SET, "fuselage")
 
 def create_wing(pos, spanlist, chordlist, twistlist, sweeploc, tess_int, airfoil_cfg, sub_cfg = []):
     #position
@@ -391,9 +461,8 @@ def create_wing(pos, spanlist, chordlist, twistlist, sweeploc, tess_int, airfoil
     nSecs = len(spanlist) 
     # Add a wing
     wid = vsp.AddGeom( "WING", "" )
-    vsp.SetSetFlag(wid, vsp.SET_FIRST_USER, True)
+    vsp.SetSetFlag(wid, VSPAERO_WING_GEOM_SET, True)
     vsp.Update()
-    vsp.SetSetFlag(wid, vsp.SET_FIRST_USER + 1, True)
     wing_name = pos["name"]
     vsp.SetGeomName(wid, wing_name)
     #set posotion
@@ -461,7 +530,7 @@ def create_wing(pos, spanlist, chordlist, twistlist, sweeploc, tess_int, airfoil
         EtaEnd = sub_cfg["EtaEnd"]
         EtaStart = sub_cfg["EtaStart"]
         subsurf_id = vsp.AddSubSurf(wid, vsp.SS_CONTROL, 0)
-        vsp.Update
+        vsp.Update()
         # 列出这个 SubSurface 的所有 Parm ID，以及它们的 Name 和 Display Group
         parm_id_vec = vsp.GetSubSurfParmIDs(subsurf_id)
         print("Found %d parms on sub-surf %s" % (len(parm_id_vec), subsurf_id))  #Debug用
@@ -473,10 +542,12 @@ def create_wing(pos, spanlist, chordlist, twistlist, sweeploc, tess_int, airfoil
         #startu, endu = surface_U(spanlist, start_l, sum(spanlist) * len_sub)
         if sub_cfg["c"]:
             name_to_value = {"EtaFlag": 1, "EtaStart": EtaStart,"EtaEnd": EtaEnd, "Abs_Rel_Flag":1, 
-                            "Length_C_Start": len_start, "Length_C_End": len_end, "SE_Const_Flag":0 } #设置起始和末尾相对长度
+                            "Length_C_Start": len_start, "Length_C_End": len_end,
+                            "SE_Const_Flag": project_config.VSPAERO_CONTROL_SURFACE_SE_CONST_FLAG } #设置起始和末尾相对长度
         else:
             name_to_value = {"EtaFlag": 1, "EtaStart": EtaStart,"EtaEnd": EtaEnd, "Abs_Rel_Flag":0, 
-                            "Length_Start": len_start, "Length_End": len_end, "SE_Const_Flag":0 } #设置起始和末尾绝对长度
+                            "Length_Start": len_start, "Length_End": len_end,
+                            "SE_Const_Flag": project_config.VSPAERO_CONTROL_SURFACE_SE_CONST_FLAG } #设置起始和末尾绝对长度
         for pid in parm_id_vec:
             name = vsp.GetParmName(pid)
             if name in name_to_value:
@@ -497,6 +568,12 @@ def create_wing(pos, spanlist, chordlist, twistlist, sweeploc, tess_int, airfoil
             if cs_name.startswith(prefix):
                 # 把对应的 1-based 索引加入结果列表
                 indices.append(idx + 1)
+
+        if len(indices) != 1:
+            raise RuntimeError(
+                f"Expected one VSPAERO control surface for {wing_name}, "
+                f"found {indices}; available surfaces: {available_cs}"
+            )
         # 同时收集这些控制面的名字
         added_cs_names = []
         for i in indices:
@@ -535,7 +612,7 @@ def place_prop(span, liftprop_Dia, tipprop_Dia, prop_ele, tess_int, fuse_w):
     prop_id = []
     for i in range(0, len(prop_pos)):
         prop_id.append(vsp.AddGeom( "PROP", "" ))
-        vsp.SetSetFlag(prop_id[-1], vsp.SET_FIRST_USER + 1, True)
+        vsp.SetSetFlag(prop_id[-1], VSPAERO_PROP_GEOM_SET, True)
         sym_parm_prop = vsp.FindParm(prop_id[i], "Sym_Planar_Flag", "Sym")  
         vsp.SetParmValUpdate(sym_parm_prop, 0) #0 for none, 1 for XY, 2 for XZ
         vsp.SetParmVal( prop_id[i], "PropMode", "Design", vsp.PROP_DISK )
@@ -552,7 +629,7 @@ def place_prop(span, liftprop_Dia, tipprop_Dia, prop_ele, tess_int, fuse_w):
 def place_single_prop(prop_Dia, prop_pos, tess_int,  prop_ele = 0):
     prop_Dia = prop_Dia * inch_in_m
     prop_id = vsp.AddGeom( "PROP", "" )
-    vsp.SetSetFlag(prop_id, vsp.SET_FIRST_USER + 1, True)
+    vsp.SetSetFlag(prop_id, VSPAERO_PROP_GEOM_SET, True)
     sym_parm_prop = vsp.FindParm(prop_id, "Sym_Planar_Flag", "Sym")  
     vsp.SetParmValUpdate(sym_parm_prop, 0) #0 for none, 1 for XY, 2 for XZ
     vsp.SetParmVal( prop_id, "PropMode", "Design", vsp.PROP_DISK )
@@ -571,123 +648,539 @@ def D0(cd0, spd, s):
     d0 = 0.5 * density * spd**2 * cd0 * s
     return d0
 
-def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing_cfg, Cl_target, sol_config, angle=[], prop_D=[],RPM =[],Ct =[],Cp =[]):
-    wing_S = wing_cfg["wing_S"]
-    bref   = wing_cfg["bref"]
-    cref   = wing_cfg["cref"]
-    Re = cref * air_spd * density / mu
-    print("Re: " + str(Re))
-    vsp.DeleteAllResults()
-    # Analysis: VSPAero Compute Geometry to Create Vortex Lattice DegenGeom File #
+def solve_small_linear_system(matrix, rhs):
+    matrix = np.asarray(matrix, dtype=float)
+    rhs = np.asarray(rhs, dtype=float)
+    n = len(rhs)
+    if matrix.shape != (n, n):
+        raise ValueError(f"Expected a square matrix with shape {(n, n)}, got {matrix.shape}")
+
+    a = matrix.tolist()
+    b = rhs.tolist()
+    for column in range(n):
+        pivot_row = max(range(column, n), key=lambda row: abs(a[row][column]))
+        pivot = a[pivot_row][column]
+        if abs(pivot) < 1.0e-12:
+            raise ValueError(f"Singular Broyden Jacobian at column {column}")
+        if pivot_row != column:
+            a[column], a[pivot_row] = a[pivot_row], a[column]
+            b[column], b[pivot_row] = b[pivot_row], b[column]
+
+        for row in range(column + 1, n):
+            factor = a[row][column] / a[column][column]
+            a[row][column] = 0.0
+            for j in range(column + 1, n):
+                a[row][j] -= factor * a[column][j]
+            b[row] -= factor * b[column]
+
+    solution = [0.0] * n
+    for row in range(n - 1, -1, -1):
+        solution[row] = (
+            b[row] - sum(a[row][j] * solution[j] for j in range(row + 1, n))
+        ) / a[row][row]
+    return np.asarray(solution, dtype=float)
+
+def _set_vspaero_geometry_sets(analysis_name, thick_geom_set, thin_geom_set):
+    vsp.SetIntAnalysisInput(analysis_name, "GeomSet", [thick_geom_set], 0)
+    vsp.SetIntAnalysisInput(analysis_name, "ThinGeomSet", [thin_geom_set], 0)
+
+def _read_vspgeom_mesh_quality(geom_file):
+    lines = open(geom_file, "r", encoding="utf-8", errors="ignore").read().splitlines()
+    face_error_count = sum(line.strip() == "# FACE ERROR" for line in lines)
+    point_count, panel_count, symmetry = map(int, lines[2].split())
+    points = np.asarray(
+        [[float(value) for value in lines[3 + index].split()] for index in range(point_count)],
+        dtype=float,
+    )
+    invalid_panel_count = 0
+    zero_edge_panel_count = 0
+    max_finite_aspect = 0.0
+    min_edge = float("inf")
+    for index in range(panel_count):
+        fields = lines[4 + point_count + index].split()
+        node_numbers = [int(value) for value in fields[1:5]]
+        if any(number < 1 or number > point_count for number in node_numbers):
+            invalid_panel_count += 1
+            continue
+        coordinates = points[np.asarray(node_numbers) - 1]
+        edges = np.linalg.norm(
+            np.roll(coordinates, -1, axis=0) - coordinates,
+            axis=1,
+        )
+        current_min_edge = float(edges.min())
+        min_edge = min(min_edge, current_min_edge)
+        if current_min_edge <= project_config.VSPAERO_MESH_QUALITY_MIN_EDGE:
+            zero_edge_panel_count += 1
+            continue
+        max_finite_aspect = max(max_finite_aspect, float(edges.max() / current_min_edge))
+    return {
+        "point_count": point_count,
+        "panel_count": panel_count,
+        "symmetry": symmetry,
+        "face_error_count": face_error_count,
+        "invalid_panel_count": invalid_panel_count,
+        "zero_edge_panel_count": zero_edge_panel_count,
+        "min_edge": min_edge,
+        "max_finite_aspect": max_finite_aspect,
+    }
+
+def _validate_vspgeom_mesh(geom_file):
+    quality = _read_vspgeom_mesh_quality(geom_file)
+    print("VSPAERO mesh quality:", quality)
+    if quality["face_error_count"] > 0:
+        raise RuntimeError(f"VSPAERO geometry contains FACE ERROR records: {geom_file}")
+    if quality["invalid_panel_count"] > 0:
+        raise RuntimeError(f"VSPAERO geometry contains invalid panel nodes: {geom_file}")
+    if quality["zero_edge_panel_count"] > 0:
+        raise RuntimeError(f"VSPAERO geometry contains zero-length panel edges: {geom_file}")
+    if quality["max_finite_aspect"] > project_config.VSPAERO_MESH_QUALITY_MAX_ASPECT:
+        raise RuntimeError(
+            f"VSPAERO geometry contains extreme sliver panels: "
+            f"aspect={quality['max_finite_aspect']:.6g}, file={geom_file}"
+        )
+    return quality
+
+def _run_vspaero_compute_geometry(thick_geom_set, thin_geom_set):
     compgeom_name = "VSPAEROComputeGeometry"
-    print( compgeom_name )
-    #Set defaults
-    vsp.SetAnalysisInputDefaults( compgeom_name )
-    # Analysis method
-    vsp.SetIntAnalysisInput( compgeom_name, "Symmetry", [2], 0 )
+    print(compgeom_name)
+    vsp.SetAnalysisInputDefaults(compgeom_name)
+    vsp.SetIntAnalysisInput(compgeom_name, "Symmetry", [2], 0)
+    _set_vspaero_geometry_sets(compgeom_name, thick_geom_set, thin_geom_set)
+    vsp.PrintAnalysisInputs(compgeom_name)
+    vsp.WriteVSPFile(file_name, vsp.SET_ALL)
+    print("\tExecuting...")
+    compgeom_resid = vsp.ExecAnalysis(compgeom_name)
+    print("COMPLETE")
+    vsp.PrintResults(compgeom_resid)
+    try:
+        geom_file = vsp.GetStringResults(compgeom_resid, "VSPGeomFileName")[0]
+    except Exception:
+        geom_file = vsp.GetStringResults(compgeom_resid, "DegenGeomFileName")[0]
+    print("Generated VSPAERO geometry file:", geom_file)
+    _validate_vspgeom_mesh(geom_file)
+    return compgeom_resid
 
-    if (len(prop_D)):
-        vsp.SetIntAnalysisInput( compgeom_name, "GeomSet", [vsp.SET_FIRST_USER + 1], 0 )
+def _apply_actuator_disk_settings(prop_D, RPM, Ct, Cp):
+    Nprops = len(prop_D)
+    if Nprops == 0:
+        return
+    num_disks = vsp.GetNumActuatorDisks()
+    if num_disks != Nprops:
+        raise ValueError(f"Expected {Nprops} actuator disks, found {num_disks}")
+    for i in range(Nprops):
+        disk_id = vsp.FindActuatorDisk(i)
+        disk_parm_ids = vsp.FindContainerParmIDs(disk_id)
+        rpm_id = None
+        ct_id = None
+        cp_id = None
+        for parm_id in disk_parm_ids:
+            parm_name = vsp.GetParmName(parm_id)
+            if parm_name == "RotorRPM":
+                rpm_id = parm_id
+            elif parm_name == "RotorCT":
+                ct_id = parm_id
+            elif parm_name == "RotorCP":
+                cp_id = parm_id
+        if rpm_id is None or ct_id is None or cp_id is None:
+            raise ValueError(f"Actuator disk {i} is missing RotorRPM/RotorCT/RotorCP parameters")
+        vsp.SetParmVal(rpm_id, RPM[i])
+        vsp.SetParmVal(ct_id, Ct[i])
+        vsp.SetParmVal(cp_id, Cp[i])
+
+def _set_prop_shown(has_prop):
+    for geom in vsp.FindGeoms():
+        type_name = vsp.GetGeomTypeName(geom).upper()
+        if type_name == "PROPELLER" or type_name == "PROP":
+            vsp.SetSetFlag(geom, vsp.SET_SHOWN, has_prop)
+    vsp.Update()
+
+def _apply_control_surface_angles(angle):
+    if not angle:
+        return
+    cs_group_container_id = vsp.FindContainer("VSPAEROSettings", 0)
+    Num_cs = vsp.GetNumControlSurfaceGroups()
+    for i in range(Num_cs):
+        cs_name = vsp.GetVSPAEROControlGroupName(i)
+        if cs_name in angle:
+            grp_name = f"ControlSurfaceGroup_{i}"
+            defl_parm = vsp.FindParm(cs_group_container_id, "DeflectionAngle", grp_name)
+            vsp.SetParmValUpdate(defl_parm, angle[cs_name])
+
+def _run_vspaero_sweep(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input,
+                       air_spd, wing_cfg, sol_config, angle,
+                       thick_geom_set, thin_geom_set, has_propellers,
+                       reynolds=None, wake_num_iter=None, prepare_model=True):
+    wing_S = wing_cfg["wing_S"]
+    bref = wing_cfg["bref"]
+    cref = wing_cfg["cref"]
+    if reynolds is None:
+        Re = cref * air_spd * density / mu
     else:
-        vsp.SetIntAnalysisInput( compgeom_name, "GeomSet", [vsp.SET_FIRST_USER], 0 )
-    vsp.PrintAnalysisInputs( compgeom_name )
-    print( "\tExecuting..." )
-    compgeom_resid = vsp.ExecAnalysis( compgeom_name)
-    print( "COMPLETE" )
+        if not math.isfinite(reynolds) or reynolds <= 0.0:
+            raise ValueError(f"reynolds must be positive and finite, got {reynolds}")
+        Re = reynolds
 
-    # Get & Display Results
-    vsp.PrintResults( compgeom_resid )
-    degen_name = vsp.GetStringResults(compgeom_resid, "DegenGeomFileName")[0]
-    print("Generated DegenGeom file:", degen_name)
-
-    # Analysis: VSPAEROSweep #
     analysis_name = "VSPAEROSweep"
-    print( analysis_name )
-    # Set Aero defaults
-    vsp.SetAnalysisInputDefaults( analysis_name )
-    vsp.SetDoubleAnalysisInput( analysis_name, "AlphaEnd", [AlphaEnd_input], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "AlphaStart", [AlphaStart_input], 0 )
-    vsp.SetIntAnalysisInput( analysis_name, "AlphaNpts", [AlphaNpts_input], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "Xcg", [CG], 0 )
-    vsp.SetIntAnalysisInput( analysis_name, "NCPU", [CPU], 0 )
-    vsp.SetIntAnalysisInput( analysis_name, "Symmetry", [2], 0 ) # 2 for XZ symmetry
-    vsp.SetDoubleAnalysisInput( analysis_name, "Sref", [wing_S], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "bref", [bref], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "cref", [cref], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "ReCref", [Re], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "Vinf", [air_spd], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "Vref", [air_spd], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "Rho", [density], 0 )
-    #convergence params
-    vsp.SetIntAnalysisInput( analysis_name, "WakeNumIter", [5], 0 )
-    vsp.SetIntAnalysisInput( analysis_name, "FarDistToggle", [1], 0 )
-    vsp.SetDoubleAnalysisInput( analysis_name, "FarDist", [sol_config["farfield"]], 0 )
-    vsp.SetIntAnalysisInput( analysis_name, "NumWakeNodes", [sol_config["wakenode"]], 0 )
-    
-    if (len(prop_D)):
-        vsp.SetIntAnalysisInput( analysis_name, "GeomSet", [vsp.SET_FIRST_USER + 1], 0 )
-        Nprops = len(prop_D)
-        vsp.SetIntAnalysisInput( analysis_name, "ActuatorDiskFlag", [1], 0 )
-        for i in range(0, Nprops):
-            disk_id = vsp.FindActuatorDisk(i)
-            vsp.SetParmVal( vsp.FindParm(disk_id, "RotorRPM", "Rotor"), RPM[i] )  
-            vsp.SetParmVal( vsp.FindParm(disk_id, "RotorCT",  "Rotor"),  Ct[i])
-            vsp.SetParmValUpdate( vsp.FindParm(disk_id, "RotorCP",  "Rotor"),  Cp[i])
-            vsp.Update()
-    else:
-        vsp.SetIntAnalysisInput( analysis_name, "GeomSet", [vsp.SET_FIRST_USER], 0 )
-
-    # CS Setting 
-    if angle:
-        cs_group_container_id = vsp.FindContainer("VSPAEROSettings", 0)
-        Num_cs = vsp.GetNumControlSurfaceGroups()
-        for i in range(0, Num_cs):
-            cs_name = vsp.GetVSPAEROControlGroupName(i)
-            if cs_name in angle:
-                # 内部组名：ControlSurfaceGroup_0, ControlSurfaceGroup_1, …
-                grp_name = f"ControlSurfaceGroup_{i}"
-                defl_parm = vsp.FindParm(cs_group_container_id, "DeflectionAngle", grp_name)
-                vsp.SetParmValUpdate(defl_parm, angle[cs_name])
-    #vsp.WriteVSPFile("auto.vsp3", vsp.SET_ALL)
-
-    #设置完毕        
-    print( "Edited input parameter: " )
-    vsp.PrintAnalysisInputs( analysis_name )
-    vsp.WriteVSPFile(file_name)
-    # 执行分析
+    print(analysis_name)
+    vsp.SetAnalysisInputDefaults(analysis_name)
+    _set_vspaero_geometry_sets(analysis_name, thick_geom_set, thin_geom_set)
+    vsp.SetDoubleAnalysisInput(analysis_name, "AlphaEnd", [AlphaEnd_input], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "AlphaStart", [AlphaStart_input], 0)
+    vsp.SetIntAnalysisInput(analysis_name, "AlphaNpts", [AlphaNpts_input], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "Xcg", [CG], 0)
+    vsp.SetIntAnalysisInput(analysis_name, "NCPU", [CPU], 0)
+    vsp.SetIntAnalysisInput(analysis_name, "Symmetry", [2], 0)
+    if has_propellers:
+        vsp.SetIntAnalysisInput(analysis_name, "PropBladesMode", [0], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "Sref", [wing_S], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "bref", [bref], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "cref", [cref], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "ReCref", [Re], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "Vinf", [air_spd], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "Vref", [air_spd], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "Rho", [density], 0)
+    wake_num_iter = 5 if wake_num_iter is None else wake_num_iter
+    if not isinstance(wake_num_iter, int) or wake_num_iter <= 0:
+        raise ValueError(f"wake_num_iter must be a positive integer, got {wake_num_iter}")
+    vsp.SetIntAnalysisInput(analysis_name, "WakeNumIter", [wake_num_iter], 0)
+    vsp.SetIntAnalysisInput(analysis_name, "FarDistToggle", [1], 0)
+    vsp.SetDoubleAnalysisInput(analysis_name, "FarDist", [sol_config["farfield"]], 0)
+    vsp.SetIntAnalysisInput(analysis_name, "NumWakeNodes", [sol_config["wakenode"]], 0)
+    if prepare_model:
+        _apply_control_surface_angles(angle)
+        vsp.Update()
+    vsp.PrintAnalysisInputs(analysis_name)
     print("\n[INFO] 开始执行 VSPAEROSweep 分析...")
     res_id = vsp.ExecAnalysis(analysis_name)
     print("[INFO] 分析完成")
+    return res_id
 
-    # 可选：输出结果摘要 vsp.PrintResults(res_id)
-    polar_name = case_name + "_DegenGeom.polar"
-    df = pd.read_fwf(polar_name)
-    # 提取需要的数据列
-    Cl_list = df['CL'].tolist()
-    Cd_list = df['CDtot'].tolist()
-    CMy_list = df['CMy'].tolist()
-    #计算功率，推力
+def _find_result_file(suffixes):
+    for suffix in suffixes:
+        path = case_name + suffix
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(f"Cannot find result file for case {case_name}: {suffixes}")
+
+def _synchronize_control_surface_taglist():
+    csf_path = case_name + ".csf"
+    taglist_path = case_name + ".ControlSurfaces.taglist"
+    if not os.path.exists(csf_path) or not os.path.exists(taglist_path):
+        return
+
+    with open(taglist_path, "r", encoding="utf-8", errors="ignore") as taglist_file:
+        taglist_lines = taglist_file.read().splitlines()
+    tag_count = int(taglist_lines[0].strip())
+    tag_names = [line.strip() for line in taglist_lines[1:] if line.strip()]
+    if len(tag_names) != tag_count:
+        raise RuntimeError(f"Invalid control-surface taglist {taglist_path}")
+    for tag_name in tag_names:
+        if not os.path.exists(tag_name + ".tag"):
+            raise RuntimeError(f"Missing control-surface tag file {tag_name}.tag")
+    if not tag_names:
+        raise RuntimeError(f"No control-surface tag files found for {case_name}")
+
+    with open(csf_path, "r", encoding="utf-8", errors="ignore") as csf_file:
+        csf_lines = csf_file.read().splitlines()
+    vspaero_name_indices = [
+        index for index, line in enumerate(csf_lines)
+        if line.strip().startswith("VSPAERO Name:")
+    ]
+    tagfile_name_indices = [
+        index for index, line in enumerate(csf_lines)
+        if line.strip().startswith("Tagfile Name:")
+    ]
+    if len(vspaero_name_indices) != tag_count or len(tagfile_name_indices) != tag_count:
+        raise RuntimeError(f"Control-surface count mismatch in {csf_path}")
+
+    new_vspaero_names = [tag_name[len(case_name):] for tag_name in tag_names]
+
+    for index, vspaero_name in zip(vspaero_name_indices, new_vspaero_names):
+        csf_lines[index] = "VSPAERO Name: " + vspaero_name
+    for index, tag_name in zip(tagfile_name_indices, tag_names):
+        csf_lines[index] = "Tagfile Name: " + tag_name
+    with open(csf_path, "w", encoding="utf-8", newline="\n") as csf_file:
+        csf_file.write("\n".join(csf_lines) + "\n")
+
+    vspaero_path = case_name + ".vspaero"
+    if not os.path.exists(vspaero_path):
+        return
+    with open(vspaero_path, "r", encoding="utf-8", errors="ignore") as vspaero_file:
+        vspaero_lines = vspaero_file.read().splitlines()
+    vspaero_surface_indices = [
+        index for index, line in enumerate(vspaero_lines)
+        if "_Surf" in line and "_SS_CONT_" in line
+    ]
+    if len(vspaero_surface_indices) != tag_count:
+        raise RuntimeError(f"Control-surface reference count mismatch in {vspaero_path}")
+    for index, vspaero_name in zip(vspaero_surface_indices, new_vspaero_names):
+        vspaero_lines[index] = vspaero_name
+    with open(vspaero_path, "w", encoding="utf-8", newline="\n") as vspaero_file:
+        vspaero_file.write("\n".join(vspaero_lines) + "\n")
+
+
+def _read_vspaero_polar(drag_column="CDi"):
+    polar_name = _find_result_file((".polar", "_DegenGeom.polar"))
+    with open(polar_name, "r", encoding="utf-8", errors="ignore") as polar_file:
+        lines = polar_file.read().splitlines()
+    header_index = next(
+        index for index, line in enumerate(lines)
+        if line.strip().startswith("Beta ")
+    )
+    columns = lines[header_index].split()
+    rows = [
+        line.split()
+        for line in lines[header_index + 1:]
+        if len(line.split()) == len(columns)
+    ]
+    if not rows:
+        raise ValueError(f"No polar rows are present in {polar_name}")
+    df = pd.DataFrame(rows, columns=columns).apply(pd.to_numeric, errors="coerce")
+    cl_column = "CLtot" if "CLtot" in df.columns else "CL"
+    cm_column = "CMytot" if "CMytot" in df.columns else "CMy"
+    if drag_column not in df.columns:
+        if drag_column == "CDi" and "CDtot" in df.columns:
+            drag_column = "CDtot"
+        else:
+            raise ValueError(f"Column {drag_column} is not present in {polar_name}")
+    return df[cl_column].tolist(), df[drag_column].tolist(), df[cm_column].tolist()
+
+def solve_stall_limit_from_lod(
+    lod_path,
+    air_spd,
+    airfoil_cfg,
+    limit_config=None,
+    wing_cfg=None,
+    flap_cfg=None,
+    flap_deflection=0.0,
+):
+    """Solve the sectional stall limit from a completed multi-case LOD file."""
+    limit_config = project_config.STALL_LIMIT_CONFIG if limit_config is None else limit_config
+    cases = stall_limit.read_lod_cases(lod_path)
+    if len(cases) < 2:
+        raise RuntimeError(
+            f"LOD contains {len(cases)} case; expected multiple alpha cases: {lod_path}"
+        )
+    if flap_deflection != 0.0 and (wing_cfg is None or flap_cfg is None):
+        raise ValueError("Wing and flap geometry are required for a deflected-flap stall limit")
+
+    def capacity_predictor(case):
+        rows = stall_limit.lod_case_main_wing_rows(case)
+        reynolds = stall_limit.lod_case_reynolds(
+            case, air_spd, density=density, viscosity=mu
+        )
+        flap_angles = np.zeros(len(rows), dtype=float)
+        hinge_points = np.ones(len(rows), dtype=float)
+        if flap_deflection != 0.0:
+            semispan = wing_cfg["bref"] / 2.0
+            if semispan <= 0.0:
+                raise ValueError("Wing semispan must be positive for flap capacity mapping")
+            eta_start = flap_cfg["EtaStart"]
+            eta_end = flap_cfg["EtaEnd"]
+            length_start = flap_cfg["Length_Start"]
+            length_end = flap_cfg["Length_End"]
+            eta_min = min(eta_start, eta_end)
+            eta_max = max(eta_start, eta_end)
+            for index, row in enumerate(rows):
+                eta = row["Yavg"] / semispan
+                if eta_min <= eta <= eta_max:
+                    span_fraction = (eta - eta_start) / (eta_end - eta_start)
+                    flap_length = length_start + span_fraction * (length_end - length_start)
+                    hinge_points[index] = 1.0 - flap_length
+                    flap_angles[index] = -flap_deflection
+        return stall_limit.predict_strip_clmax(
+            airfoil_cfg,
+            reynolds,
+            limit_config=limit_config,
+            flap_deflection=flap_angles,
+            hinge_point=hinge_points,
+        )
+
+    result = stall_limit.solve_lod_stall_limit(
+        cases,
+        capacity_predictor,
+        limit_config=limit_config,
+    )
+    result["lod_path"] = os.path.abspath(lod_path)
+    result["case_count"] = len(cases)
+    return result
+
+def run_stall_limit_sweep(CG, air_spd, wing_cfg, airfoil_cfg,
+                          angle=None, prop_D=None, RPM=None, Ct=None, Cp=None,
+                          sol_config=None, limit_config=None,
+                          isolated=True, flap_cfg=None, flap_deflection=0.0):
+    """Run a real VSPAERO alpha sweep and solve the sectional stall limit."""
+    limit_config = project_config.STALL_LIMIT_CONFIG if limit_config is None else limit_config
+    sol_config = solver_config0 if sol_config is None else sol_config
+    angle = {} if angle is None else angle
+    prop_D = [] if prop_D is None else prop_D
+    RPM = [] if RPM is None else RPM
+    Ct = [] if Ct is None else Ct
+    Cp = [] if Cp is None else Cp
+
+    alpha_min = limit_config["alpha_min"]
+    alpha_max = limit_config["alpha_max"]
+    alpha_points = limit_config["alpha_points"]
+    if alpha_points < 2:
+        raise ValueError("STALL_LIMIT_CONFIG alpha_points must be at least 2")
+    if alpha_max <= alpha_min:
+        raise ValueError("STALL_LIMIT_CONFIG alpha_max must exceed alpha_min")
+
+    aero_function = _runaero_isolated if isolated else runaero
+    aero_function(
+        CG, alpha_min, alpha_max, alpha_points, air_spd, wing_cfg, 0.0,
+        sol_config, angle, prop_D, RPM, Ct, Cp,
+    )
+
+    lod_path = _find_result_file((".lod", "_DegenGeom.lod"))
+    result = solve_stall_limit_from_lod(
+        lod_path,
+        air_spd,
+        airfoil_cfg,
+        limit_config=limit_config,
+        wing_cfg=wing_cfg,
+        flap_cfg=flap_cfg,
+        flap_deflection=flap_deflection,
+    )
+    result["alpha_min"] = float(alpha_min)
+    result["alpha_max"] = float(alpha_max)
+    result["alpha_points"] = int(alpha_points)
+    return result
+
+def _runaero_isolated(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input,
+                      air_spd, wing_cfg, Cl_target, sol_config, angle,
+                      prop_D, RPM, Ct, Cp, reynolds=None, wake_num_iter=None):
+    source_model_path = os.path.abspath(file_name)
+    worker_dir = os.path.join(os.getcwd(), f"vsp_worker_{uuid.uuid4().hex}")
+    os.makedirs(worker_dir)
+    worker_case_name = case_name
+    worker_model_path = os.path.join(worker_dir, worker_case_name + ".vsp3")
+    shutil.copy2(source_model_path, worker_model_path)
+    request_path = os.path.join(worker_dir, "request.json")
+    response_path = os.path.join(worker_dir, "response.json")
+    log_path = os.path.join(worker_dir, "worker.log")
+
+    request = {
+        "case_name": worker_case_name,
+        "file_name": worker_case_name + ".vsp3",
+        "model_file": worker_model_path,
+        "workdir": worker_dir,
+        "CG": CG,
+        "AlphaStart_input": AlphaStart_input,
+        "AlphaEnd_input": AlphaEnd_input,
+        "AlphaNpts_input": AlphaNpts_input,
+        "air_spd": air_spd,
+        "wing_cfg": wing_cfg,
+        "Cl_target": Cl_target,
+        "sol_config": sol_config,
+        "angle": angle,
+        "prop_D": np.asarray(prop_D, dtype=float).tolist(),
+        "RPM": np.asarray(RPM, dtype=float).tolist(),
+        "Ct": np.asarray(Ct, dtype=float).tolist(),
+        "Cp": np.asarray(Cp, dtype=float).tolist(),
+        "reynolds": reynolds,
+        "wake_num_iter": wake_num_iter,
+        "density": density,
+    }
+    with open(request_path, "w", encoding="utf-8") as request_file:
+        json.dump(request, request_file, ensure_ascii=False)
+
+    worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infrastructure_worker.py")
+    print(f"[VSPAERO worker] start case={case_name} dir={worker_dir}", flush=True)
+    with open(log_path, "w", encoding="utf-8") as worker_log:
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = 0
+        worker_process = subprocess.Popen(
+            [sys.executable, worker_path, request_path, response_path],
+            cwd=worker_dir,
+            stdout=worker_log,
+            stderr=subprocess.STDOUT,
+            startupinfo=startup_info,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            returncode = worker_process.wait(timeout=VSPAERO_WORKER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            subprocess.run(
+                ["taskkill", "/PID", str(worker_process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            raise TimeoutError(
+                f"isolated VSPAERO worker exceeded {VSPAERO_WORKER_TIMEOUT_SECONDS} seconds; "
+                f"worker directory: {worker_dir}; log: {log_path}"
+            ) from error
+    print(f"[VSPAERO worker] returncode={returncode} case={case_name}", flush=True)
+    if returncode != 0:
+        raise RuntimeError(
+            f"isolated VSPAERO worker failed with exit code {returncode:#x}; "
+            f"worker directory: {worker_dir}; log: {log_path}"
+        )
+
+    if not os.path.exists(response_path):
+        raise RuntimeError(
+            f"isolated VSPAERO worker exited successfully but produced no response; "
+            f"worker directory: {worker_dir}; log: {log_path}"
+        )
+    with open(response_path, "r", encoding="utf-8") as response_file:
+        response = json.load(response_file)
+    for worker_filename in os.listdir(worker_dir):
+        if worker_filename.startswith(worker_case_name):
+            worker_result_path = os.path.join(worker_dir, worker_filename)
+            if os.path.isfile(worker_result_path):
+                parent_result_path = os.path.join(os.getcwd(), worker_filename)
+                shutil.copy2(worker_result_path, parent_result_path)
+    shutil.rmtree(worker_dir)
+    return (
+        response["drag"], response["alpha"], response["lift"], response["netdrag"],
+        response["power"], response["Cl_list"], response["CMy"]
+    )
+
+def runaero(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input, air_spd, wing_cfg, Cl_target, sol_config, angle=[], prop_D=[],RPM =[],Ct =[],Cp =[], reynolds=None, wake_num_iter=None):
+    global vspaero_geometry_signature
+    wing_S = wing_cfg["wing_S"]
+    Nprops = len(prop_D)
+    Re = wing_cfg["cref"] * air_spd * density / mu if reynolds is None else reynolds
+    print("Re: " + str(Re))
+    vsp.DeleteAllResults()
+    _set_prop_shown(Nprops > 0)
+    _apply_control_surface_angles(angle)
+    vsp.Update()
+    thin_geom_set = VSPAERO_PROP_THIN_GEOM_SET if Nprops > 0 else VSPAERO_NO_PROP_THIN_GEOM_SET
+    geometry_signature = (Nprops > 0, Nprops, thin_geom_set)
+    if geometry_signature != vspaero_geometry_signature:
+        if Nprops > 0:
+            _apply_actuator_disk_settings(prop_D, RPM, Ct, Cp)
+        _run_vspaero_compute_geometry(VSPAERO_NO_GEOM_SET, thin_geom_set)
+        _synchronize_control_surface_taglist()
+        vspaero_geometry_signature = geometry_signature
+    _run_vspaero_sweep(CG, AlphaStart_input, AlphaEnd_input, AlphaNpts_input,
+                       air_spd, wing_cfg, sol_config, angle,
+                       VSPAERO_NO_GEOM_SET, thin_geom_set,
+                       Nprops > 0, reynolds, wake_num_iter, prepare_model=False)
+    Cl_list, Cd_list, CMy_list = _read_vspaero_polar("CDi")
+
     thrust = 0
     power = 0
-    if (len(prop_D)):
-        for i in range(Nprops):
-            thrust = thrust + prop_D[i]**4 * (RPM[i]/60)**2 * Ct[i] * density * 2 
-            power = power + prop_D[i]**5 * (RPM[i]/60)**3 * Cp[i] * density * 2 
-    #计算气动力
-    if (AlphaNpts_input >= 2):
-        alpha_list = np.linspace(AlphaStart_input, AlphaEnd_input, AlphaNpts_input) 
+    for i in range(Nprops):
+        thrust += prop_D[i] ** 4 * (RPM[i] / 60) ** 2 * Ct[i] * density * 2
+        power += prop_D[i] ** 5 * (RPM[i] / 60) ** 3 * Cp[i] * density * 2
+
+    if AlphaNpts_input >= 2:
+        alpha_list = np.linspace(AlphaStart_input, AlphaEnd_input, AlphaNpts_input)
         alpha = np.interp(Cl_target, Cl_list, alpha_list)
         Cd_target = np.interp(Cl_target, Cl_list, Cd_list)
         CMy = np.interp(Cl_target, Cl_list, CMy_list)
-        drag = 0.5 * Cd_target * density * wing_S * air_spd**2
-        lift = 0.5 * Cl_target * density * wing_S * air_spd**2 + thrust * np.sin(alpha/360 * 2 * np.pi)
+        drag = 0.5 * Cd_target * density * wing_S * air_spd ** 2
+        lift = 0.5 * Cl_target * density * wing_S * air_spd ** 2 + thrust * np.sin(alpha / 360 * 2 * np.pi)
     else:
         alpha = AlphaEnd_input
-        drag = 0.5 * Cd_list[0] * density * wing_S * air_spd**2
-        lift = 0.5 * Cl_list[0] * density * wing_S * air_spd**2 + thrust * np.sin(alpha/360 * 2 * np.pi)
+        drag = 0.5 * Cd_list[0] * density * wing_S * air_spd ** 2
+        lift = 0.5 * Cl_list[0] * density * wing_S * air_spd ** 2 + thrust * np.sin(alpha / 360 * 2 * np.pi)
         CMy = CMy_list[0]
-
-    net_drag = drag - thrust* np.cos(alpha/360 * 2 * np.pi) #加上螺旋桨净阻力
+    net_drag = drag - thrust * np.cos(alpha / 360 * 2 * np.pi)
     return drag, alpha, lift, net_drag, power, Cl_list, CMy
 
 def cal_cg(Kn, cfg, AOA, typ_speed):
@@ -706,9 +1199,29 @@ def cal_cg(Kn, cfg, AOA, typ_speed):
     CG = XNP - Kn * Mean_chord
     return CG
 
+def make_broyden_config(prop_data, max_AOA, weight):
+    return {
+        "max_it": 4,
+        "max_aero_calls": 6,
+        "moment_scale": 0.1,
+        "variable_scale": [1.0, weight, 5.0],
+        "max_steps": [2.0, 0.8 * weight, 10.0],
+        "alpha_bounds": [-1.0, max_AOA],
+        "thrust_bounds": [0.0, 2.0],
+        "elevator_bounds": [-25.0, 25.0],
+        "lift_rel_tol": 0.01,
+        "drag_rel_tol": 0.001,
+        "moment_abs_tol": 1.0e-4,
+        "final_tolerance_factor": 3.0,
+        "broyden_damping": 0.85,
+        "physics_diagonal": [0.10, -1.0, 0.8],
+        "isolate_vspaero": True,
+        "propdata": prop_data,
+    }
+
 def single_point(f_cond, geo_info, config):
-    CG=geo_info["CG"]
-    cfg = {"wing_S": geo_info["wing_S"], "bref": geo_info["bref"],"cref": geo_info["cref"]}
+    CG = geo_info["CG"]
+    cfg = {"wing_S": geo_info["wing_S"], "bref": geo_info["bref"], "cref": geo_info["cref"]}
     spanlist = geo_info["spanlist"]
     span = geo_info["span"]
     chordlist = geo_info["chordlist"]
@@ -719,144 +1232,230 @@ def single_point(f_cond, geo_info, config):
     prop_pos = geo_info["prop_pos"]
     global mass
 
-    max_AOA =f_cond["max_AOA"]
+    max_AOA = f_cond["max_AOA"]
     speed = f_cond["speed"]
     thrust_ratio = f_cond["TR"]
-    d0 = f_cond["d0"]
+    d0_others = f_cond["d0_others"] if "d0_others" in f_cond else f_cond["d0"]
+    t_over_c = geo_info["t_over_c"] if "t_over_c" in geo_info else None
     Cl_target = f_cond["Cl_target"]
-
     prop_data = config["propdata"]
 
-    drag_maxit = config["max_it"]
-    omega_drag = config["relax"][0]
-    omega_lift = config["relax"][1]
-    max_step = config["max_alpha_step"]
+    max_it = config["max_it"]
+    max_aero_calls = config["max_aero_calls"]
+    moment_scale = config["moment_scale"]
+    alpha_scale = config["variable_scale"][0]
+    elevator_scale = config["variable_scale"][2]
+    max_steps = np.asarray(config["max_steps"], dtype=float)
+    damping = config["broyden_damping"]
+    physics_diagonal = np.asarray(config["physics_diagonal"], dtype=float)
+    debug_log = []
 
-    ele_def0 = 0
-    ele_def1 = def_cfg["elevator"]
-    def_cfg["elevator"] = ele_def0
-    if (Cl_target == -1):
-        drag, alpha, lift, netdrag0, power, _, CMy0 = runaero(CG, max_AOA, max_AOA, 1, speed, cfg, 0, solver_config0, def_cfg)
+    initial_elevator = def_cfg["elevator"]
+    vsp.WriteVSPFile(file_name, vsp.SET_ALL)
+    def_cfg["elevator"] = 0.0
+    initial_aero_function = _runaero_isolated if config["isolate_vspaero"] else runaero
+    if Cl_target == -1:
+        drag, alpha, lift, netdrag, power, _, CMy = initial_aero_function(
+            CG, max_AOA, max_AOA, 1, speed, cfg, 0, solver_config0, def_cfg,
+            [], [], [], []
+        )
     else:
-        drag, alpha, lift, netdrag0, power, _, CMy0 = runaero(CG, 0, max_AOA, 2, speed, cfg, Cl_target, solver_config0, def_cfg)
+        drag, alpha, lift, netdrag, power, _, CMy = initial_aero_function(
+            CG, 0, max_AOA, 2, speed, cfg, Cl_target, solver_config0, def_cfg,
+            [], [], [], []
+        )
 
-    netdrag0 = netdrag0 + d0
+    d0_wing = calculate_parasite_drag_from_lod(speed, t_over_c)
+    netdrag = netdrag + d0_others + d0_wing
 
-    RPM, Ct, Cp = prop.equal_thrust(prop_data, netdrag0, speed, prop_D_inch, thrust_ratio) #大螺旋桨转速
-    thrust1 = netdrag0
-    #修正升力
-    total_lift = lift + netdrag0 * np.sin(alpha/360 * 2 * np.pi)
-    Cl_target = mass * g / total_lift * Cl_target
-    #第二次气动
-    
-    def_cfg["elevator"] = ele_def1
-
-    if (Cl_target == -1):
-        drag, alpha, lift, netdrag1, power, _, CMy1 = runaero(CG, max_AOA, max_AOA, 1, speed, cfg, 0,
-                                                              solver_config1, def_cfg, prop_D, RPM, Ct, Cp)
-    else:
-        drag, alpha, lift, netdrag1, power, _, CMy1 = runaero(CG, max(-1, alpha-1), min(max_AOA, alpha+1), 2, speed, cfg, Cl_target,
-                                                              solver_config1, def_cfg, prop_D, RPM, Ct, Cp)
-
-    netdrag1 = netdrag1 + d0
-    #校准质量
     y_cp = read_halfwing_cp()
     mass, wing_mass = mass_sim_iter(span, wing_S, y_cp, prop_pos, spanlist, chordlist)
-    
-    thrust0 = 0 
-    drag_tol = (drag + d0) * config["tol"][0]
-    lift_tol = mass * g * config["tol"][1]
-    mom_tol  =  CMy0 * config["tol"][2]
-    # 初始化历史量
-    alpha0, alpha1 = None, alpha
-    L0,     L1     = None, lift
-    lift_error0, lift_error1 = None, (lift - mass * g)   # 给第一次迭代提供可用的 lift 残差
+    weight = mass * g
 
-    # --- 进入主循环 ---
-    for i in range(drag_maxit):
-        alpha_this_iter = alpha 
+    alpha_min = (
+        min(config["alpha_bounds"][0], max_AOA)
+        if Cl_target == -1
+        else config["alpha_bounds"][0]
+    )
+    alpha_max = min(config["alpha_bounds"][1], max_AOA)
+    thrust_min = config["thrust_bounds"][0]
+    thrust_max = config["thrust_bounds"][1] * weight
+    elevator_min = config["elevator_bounds"][0]
+    elevator_max = config["elevator_bounds"][1]
+    state_scale = np.array([alpha_scale, weight, elevator_scale], dtype=float)
+    state_min = np.array([alpha_min, thrust_min, elevator_min], dtype=float)
+    state_max = np.array([alpha_max, thrust_max, elevator_max], dtype=float)
+    residual_scale = np.array([weight, weight, moment_scale], dtype=float)
 
-        if abs(netdrag1) < drag_tol:
-            thrust2 = thrust1    # 保持不变
-        else:
-            den = (netdrag0 - netdrag1)
-            if abs(den) < 1e-4:
-                # 解析“牛顿步”：T_new = T_old + netdrag / cos(a)
-                c = max(np.cos(np.deg2rad(alpha)), 0.05)  # 防奇异
-                thrust_target = thrust1 + netdrag1 / c
-            else:
-                thrust_target = (netdrag0 * thrust1 - netdrag1 * thrust0) / den
-            thrust2 = (1 - omega_drag) * thrust1 + omega_drag * thrust_target
+    if Cl_target == -1:
+        active_variables = np.array([1, 2], dtype=int)
+        active_residuals = np.array([1, 2], dtype=int)
+    else:
+        active_variables = np.array([0, 1, 2], dtype=int)
+        active_residuals = np.array([0, 1, 2], dtype=int)
 
-        # 升降舵
-        if (abs(CMy1) < mom_tol) or (abs(CMy0 - CMy1) < 1e-4):
-            ele_def2 = ele_def1  # 保持不变
-        else:
-            ele_def2 = (CMy0 * ele_def1 - CMy1 * ele_def0) / (CMy0 - CMy1)
+    residual_tolerance = np.array([
+        config["drag_rel_tol"],
+        config["moment_abs_tol"] / moment_scale,
+    ]) if Cl_target == -1 else np.array([
+        config["lift_rel_tol"],
+        config["drag_rel_tol"],
+        config["moment_abs_tol"] / moment_scale,
+    ])
 
-        # 应用输入值并进行当前迭代的气动计算 ---
-        def_cfg["elevator"] = ele_def2
-        RPM, Ct, Cp = prop.equal_thrust(prop_data, thrust2, speed, prop_D_inch, thrust_ratio)
+    def project_state(z):
+        state = np.asarray(z, dtype=float) * state_scale
+        state = np.clip(state, state_min, state_max)
+        return state / state_scale
 
-        if alpha > max_AOA:
-            warnings.warn(f"Stall may happen!! Alpha={alpha:.2f}", category=None, stacklevel=1)
-        
-        drag, _, lift2, netdrag2, power, _, CMy2 = runaero(CG, alpha, alpha, 1, speed, cfg, 0, solver_config1, def_cfg, prop_D, RPM, Ct, Cp)
+    def evaluate_state(z, solver_config):
+        z = project_state(z)
+        alpha_state, thrust_state, elevator_state = z * state_scale
+        def_cfg["elevator"] = elevator_state
+        RPM, Ct, Cp = prop.equal_thrust(
+            prop_data, thrust_state, speed, prop_D_inch, thrust_ratio
+        )
+        aero_function = _runaero_isolated if config["isolate_vspaero"] else runaero
+        drag_state, _, lift_state, netdrag_state, power_state, _, CMy_state = aero_function(
+            CG, alpha_state, alpha_state, 1, speed, cfg, 0, solver_config,
+            def_cfg, prop_D, RPM, Ct, Cp
+        )
+        d0_wing_state = calculate_parasite_drag_from_lod(speed, t_over_c)
+        netdrag_state = netdrag_state + d0_others + d0_wing_state
+        residual_state = np.array([
+            lift_state - weight,
+            netdrag_state,
+            CMy_state,
+        ]) / residual_scale
+        if Cl_target == -1:
+            residual_state = residual_state[1:]
+        return {
+            "alpha": alpha_state,
+            "thrust": thrust_state,
+            "elevator": elevator_state,
+            "RPM": RPM,
+            "drag": drag_state,
+            "lift": lift_state,
+            "netdrag": netdrag_state,
+            "power": power_state,
+            "CMy": CMy_state,
+            "residual": residual_state,
+            "D0_wing": d0_wing_state,
+        }
 
-        # 计算本次迭代产生的误差 ---
-        netdrag2 = netdrag2 + d0
-        lift_error2 = lift2 - (mass * g)
+    initial_state = np.array([
+        alpha,
+        max(netdrag, thrust_min),
+        initial_elevator,
+    ], dtype=float)
+    z = project_state(initial_state / state_scale)
+    state = evaluate_state(z, solver_config0)
+    aero_calls = 2
+    max_steps_z = max_steps / state_scale
+    if aero_calls > max_aero_calls:
+        raise RuntimeError(f"Initial aerodynamic calls exceeded budget {max_aero_calls}")
 
-        # 检查是否收敛 ---
-        if (abs(netdrag2) < drag_tol) and (abs(lift_error2) < lift_tol):
-            print(f"Converged in {i+1} iterations!")
+    jacobian = np.zeros((len(active_variables), len(active_variables)), dtype=float)
+    for row, residual_index in enumerate(active_residuals):
+        variable_position = np.where(active_variables == residual_index)[0]
+        if len(variable_position) != 1:
+            raise ValueError(f"No physical variable is available for residual {residual_index}")
+        jacobian[row, variable_position[0]] = physics_diagonal[residual_index]
+    print(f"[Broyden] physical Jacobian initialized: {jacobian}", flush=True)
+
+    converged = False
+    final_solver_used = False
+    for iteration in range(1, max_it + 1):
+        residual = state["residual"]
+        if np.all(np.abs(residual) <= residual_tolerance):
+            converged = True
             break
 
-        # ====== 更新历史点 ======
-        netdrag0, netdrag1 = netdrag1, netdrag2
-        thrust0,  thrust1  = thrust1,  thrust2
-        CMy0,     CMy1     = CMy1,     CMy2
-        ele_def0, ele_def1 = ele_def1, ele_def2
-        alpha0,   alpha1   = alpha1,   alpha
-        lift_error0, lift_error1 = lift_error1, lift_error2
-        L0, L1 = L1, lift2
+        print(f"[Broyden] solve iteration={iteration} residual={residual}", flush=True)
+        delta_active = solve_small_linear_system(jacobian, -residual)
+        delta_z = np.zeros(3, dtype=float)
+        delta_z[active_variables] = np.clip(
+            damping * delta_active,
+            -max_steps_z[active_variables],
+            max_steps_z[active_variables],
+        )
 
-        # 迎角
-        if (Cl_target !=-1): #仅非升力约束下考虑
-            if (lift_error1 is not None) and (abs(lift_error1) < lift_tol):
-                # 保持 alpha 不变，继续让推力/力矩收敛
-                alpha = alpha1
-                continue
+        trial_z = project_state(z + delta_z)
+        final_solver_used = iteration == max_it
+        trial_state = evaluate_state(trial_z, solver_config1 if final_solver_used else solver_config0)
+        aero_calls += 1
+        if aero_calls > max_aero_calls:
+            raise RuntimeError(f"Aerodynamic call budget exceeded {max_aero_calls}")
 
-            # 用 lift 的割线斜率做一次牛顿步 + 动态松弛 + 步长限幅
-            if i < 1 or (alpha0 is None) or (L0 is None) or abs(alpha1 - alpha0) < 1e-4:
-                # 历史不足：用比例法的小步修正
-                S_alpha_guess = max(abs(lift2) / max(abs(alpha1), 1e-3), 1.0)  # 局部斜率保守估计
-                delta_alpha = (mass * g - lift2) / max(S_alpha_guess, 1e-4)
-            else:
-                dL_dalpha = (L1 - L0) / (alpha1 - alpha0)
-                if abs(dL_dalpha) < 1e-4:
-                    delta_alpha = np.sign(mass * g - lift2) * 0.2
-                else:
-                    delta_alpha = (mass * g - lift2) / dL_dalpha
+        accepted_step = trial_z - z
+        jacobian_step = trial_state["residual"] - residual - jacobian @ accepted_step[active_variables]
+        denominator = np.dot(accepted_step[active_variables], accepted_step[active_variables])
+        if denominator < 1.0e-14:
+            raise RuntimeError("Broyden step collapsed to zero")
+        jacobian = jacobian + np.outer(jacobian_step, accepted_step[active_variables]) / denominator
 
-            # 步长限幅 + 抑制震荡
-            delta_alpha = np.clip(delta_alpha, -max_step, max_step)
-            alpha_target = alpha1 + delta_alpha
+        z = trial_z
+        state = trial_state
+        debug_log.append({
+            "Iteration": iteration,
+            "AeroCalls": aero_calls,
+            "Alpha": state["alpha"],
+            "Lift": state["lift"],
+            "Drag": state["drag"],
+            "Thrust": state["thrust"],
+            "Weight": weight,
+            "CMy": state["CMy"],
+            "Elevator": state["elevator"],
+            "NetDrag": state["netdrag"],
+            "LiftResidual": (state["lift"] - weight) / weight,
+            "DragResidual": state["netdrag"] / weight,
+            "MomentResidual": state["CMy"] / moment_scale,
+            "ResidualNorm": np.linalg.norm(state["residual"], ord=2),
+            "D0_wing": state["D0_wing"],
+        })
 
-            lift_err_prev = (L0 - mass * g) if (L0 is not None) else None
-            if (lift_err_prev is not None) and (lift_err_prev * (lift2 - mass * g) < 0):
-                omega_lift = 0.25 * omega_lift
+    final_state = state
+    if not final_solver_used:
+        final_state = evaluate_state(z, solver_config1)
+        aero_calls += 1
+        if aero_calls > max_aero_calls:
+            raise RuntimeError(f"Aerodynamic call budget exceeded {max_aero_calls}")
+        if debug_log:
+            debug_log[-1].update({
+                "AeroCalls": aero_calls,
+                "Alpha": final_state["alpha"],
+                "Lift": final_state["lift"],
+                "Drag": final_state["drag"],
+                "Thrust": final_state["thrust"],
+                "CMy": final_state["CMy"],
+                "Elevator": final_state["elevator"],
+                "NetDrag": final_state["netdrag"],
+                "LiftResidual": (final_state["lift"] - weight) / weight,
+                "DragResidual": final_state["netdrag"] / weight,
+                "MomentResidual": final_state["CMy"] / moment_scale,
+                "ResidualNorm": np.linalg.norm(final_state["residual"], ord=2),
+                "D0_wing": final_state["D0_wing"],
+            })
+    final_residual_tolerance = residual_tolerance * config["final_tolerance_factor"]
+    final_converged = np.all(np.abs(final_state["residual"]) <= final_residual_tolerance)
+    if aero_calls > max_aero_calls:
+        raise RuntimeError(f"Aerodynamic call budget exceeded {max_aero_calls}")
+    state = final_state
+    converged = final_converged
 
-            alpha = (1.0 - omega_lift) * alpha1 + omega_lift * alpha_target
-        else:
-            alpha = max_AOA
-
+    if converged:
+        print(f"Broyden converged in {len(debug_log)} iterations, {aero_calls} aero calls!")
     else:
-        print("Warning: Did not converge within the maximum number of iterations.")
+        print(f"Warning: Broyden did not converge within {max_it} iterations ({aero_calls} aero calls).")
 
-    mass_result = {"mass":mass, "wing_mass":wing_mass}
-    return lift2, drag, power, alpha_this_iter, RPM, thrust2, mass_result, ele_def2
+    mass_result = {"mass": mass, "wing_mass": wing_mass}
+    filename = f"convergence_{case_name}_V{speed:.1f}.csv"
+    pd.DataFrame(debug_log).to_csv(filename, index=False)
+    print(f"Convergence log saved to {filename}")
+    return (
+        state["lift"], state["drag"], state["power"], state["alpha"],
+        state["RPM"], state["thrust"], mass_result, state["elevator"]
+    )
 
 if __name__ == "__main__":
     print("testing")
@@ -894,7 +1493,7 @@ if __name__ == "__main__":
     tail_pos = {"name": "tail","x":0.5, "y":0, "z":0, "yr": 0}
 
     tess_int = 0.005
-    cruise_spd = 12
+    cruise_spd = project_config.EVALUATION_TYPICAL_SPEED
     # 1) 生成初始网格
     #spans, chords, twists, wing_S, Cl_target = generate_elliptical_wing(chord_root=0.2, chord_tip=0.05, semispan=0.7, nSecs=7, air_spd = cruise_spd)
     spans, chords, twists, wing_S, Cl_target = think_trapwing(0.2, 0.05, span, 0.05, 0, cruise_spd)

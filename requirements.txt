@@ -1,0 +1,2 @@
+neuralfoil==0.3.3
+aerosandbox==4.2.10

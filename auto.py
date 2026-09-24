@@ -6,32 +6,26 @@ import threading
 import tkinter as tk
 import prop
 import infrastructure as opb
+import config as project_config
 import csv
 import warnings
 # This is for vsp3.41!!!
 cfg = {"wing_S": 0, "bref": 0,"cref": 0}
 
-wing_pos = {"name": "Mainwing", "x":0, "y":0, "z":0, "yr": 0}
-tail_pos = {"name": "Horizontal_stab", "x":0.615, "y":0, "z":-0.03, "yr": 0}
-
-airfoil_cfg = {"filename": None, "Camber" : 0.04,"CamberLoc": 0.4,"ThickChord": 0.12}
-
-airfoiltail_cfg = {"filename": None, "Camber" : 0,"CamberLoc": 0,"ThickChord": 0.12}
-
-flap_cfg = {"name": "Flaperon", "c" :1, "Length_Start" : 0.3,"Length_End" : 0.25,"EtaStart" : 0.8, "EtaEnd": 0.07}
-
-ELE_cfg = {"name": "elevator", "c" :0, "Length_Start" : 0.05,"Length_End" : 0.05,"EtaStart" : 0.727000, "EtaEnd": 0}
-
-def_cfg = {"elevator": -5, "Flaperon": -20}
-
-tail_cfg = {"root": 0.168,"tip": 0.095,"span": 0.24}
-
-mass_prop = {"S_density": 1.6, "CF_Strength": 450e6, "CF_rho": 2000, "fuse_mass": 1.2, "prop": [0.05,0.05,0.05,0.12], "payload": 0.3}
+wing_pos = dict(project_config.AUTO_WING_POS)
+tail_pos = dict(project_config.AUTO_TAIL_POS)
+airfoil_cfg = dict(project_config.AIRFOIL_CFG)
+airfoiltail_cfg = dict(project_config.TAIL_AIRFOIL_CFG)
+flap_cfg = dict(project_config.FLAP_CFG)
+ELE_cfg = dict(project_config.ELEVATOR_CFG)
+def_cfg = dict(project_config.AUTO_DEF_CFG)
+tail_cfg = dict(project_config.TAIL_CFG)
+mass_prop = dict(project_config.MASS_PROP)
 opb.mass_prop = mass_prop
 
 #setting
-include_weight = 1
-include_TL = 1
+include_weight = project_config.INCLUDE_WEIGHT
+include_TL = project_config.INCLUDE_TAKEOFF_LANDING
 
 mass = 1
 
@@ -42,9 +36,11 @@ labels = {}  # 键为变量名，值为对应的 Label 控件
 ld_hst = []
 LP_hst =[]
 ratio_hst = []
+landing_ratio_hst = []
 
 power_hst = []
 target_hst = []
+target_delta_hst = []
 RPMC_hst = []
 RPML_hst = []
 liftL_hst = []
@@ -63,56 +59,59 @@ file_name = case_name + ".vsp3"
 
 opb.case_name = case_name
 opb.file_name = file_name
-ACC = 0.1
-g = 9.8
+ACC = project_config.SLSQP_ACC
+g = project_config.G
 opb.g = g
-cruise_spd = 15
-min_speed = 7
-max_AOA = 10
+cruise_spd = project_config.CRUISE_SPEED
+min_speed = project_config.LANDING_SPEED
+max_AOA = project_config.MAX_AOA
 
-density = 1.225
+density = project_config.DENSITY
 opb.density = density
 
 #flight setting
-G = 5
-SF = 1.5
+G = project_config.ULTIMATE_LOAD_FACTOR
+SF = project_config.SAFETY_FACTOR
 n_ult = G * SF
 opb.SF = SF
 opb.G = G
-g = 9.8
-opb.g = g
-cD0_C = 0.08
-cD0_L = 0.1
-cD0_S = 0.06
+cD0_C = project_config.CRUISE_CD0
+cD0_L = project_config.LANDING_CD0
+cD0_S = project_config.REFERENCE_CD0_S
 d0_C = opb.D0(cD0_C, cruise_spd, cD0_S) 
 d0_L = opb.D0(cD0_L, min_speed, cD0_S) 
 
 #analysis parameter
-tess_interval = 0.01
+tess_interval = project_config.MESH_INTERVAL
 iter = 0
-sen_step = 0.02
-drag_maxit = 9
-far_1 = 3
-far_2 = 10
-wakeN_1 = 16
-wakeN_2 = 32
-omega_lift = 0.7
-omega_drag = 0.7
-max_step = 0.3  # deg
+sen_step = project_config.SLSQP_SENS_STEP
+sens_scale = project_config.SLSQP_SENSITIVITY
 
-#Normalization
-thrust_mul = 5
-max_thr_ratio = 0.82
-min_thr_ratio = 0.3
-taper_mul = 5
-chord_div = 3
-span_mul = 2.5
-angle_mul = 10
+span_min, span_max, span_value = project_config.DESIGN_BOUNDS["span"]
+chord_min, chord_max, chord_value = project_config.DESIGN_BOUNDS["Mean_chord"]
+taper_min, taper_max, taper_value = project_config.DESIGN_BOUNDS["taper"]
+angle_min, angle_max, angle_value = project_config.DESIGN_BOUNDS["wing_angle"]
+thrust_min, thrust_max, thrust_value = project_config.DESIGN_BOUNDS["thrust_ratio"]
+_, _, landing_thrust_value = project_config.DESIGN_BOUNDS["thrust_ratio_landing"]
+
+if not span_min <= span_value <= span_max:
+    raise ValueError(f"span initial value {span_value} is outside [{span_min}, {span_max}]")
+if not chord_min <= chord_value <= chord_max:
+    raise ValueError(f"Mean_chord initial value {chord_value} is outside [{chord_min}, {chord_max}]")
+if not taper_min <= taper_value <= taper_max:
+    raise ValueError(f"taper initial value {taper_value} is outside [{taper_min}, {taper_max}]")
+if not angle_min <= angle_value <= angle_max:
+    raise ValueError(f"wing_angle initial value {angle_value} is outside [{angle_min}, {angle_max}]")
+if not thrust_min <= thrust_value <= thrust_max:
+    raise ValueError(f"thrust_ratio initial value {thrust_value} is outside [{thrust_min}, {thrust_max}]")
+landing_thrust_min, landing_thrust_max, _ = project_config.DESIGN_BOUNDS["thrust_ratio_landing"]
+if not landing_thrust_min <= landing_thrust_value <= landing_thrust_max:
+    raise ValueError(f"thrust_ratio_landing initial value {landing_thrust_value} is outside [{landing_thrust_min}, {landing_thrust_max}]")
 
 prop_choice = prop.prop_choice
-liftprop_Dia = 8
-tipprop_Dia = 13
-fuse_w = 0.07
+liftprop_Dia = project_config.PROP_DIAMETERS_INCH["lift"]
+tipprop_Dia = project_config.PROP_DIAMETERS_INCH["tip"]
+fuse_w = project_config.FUSELAGE_HALF_WIDTH
 
 # 获取当前脚本所在目录
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -123,6 +122,8 @@ os.chdir(script_dir)
 prop_data = prop.read_apce_grouped('data')
 # 切换当前工作目录
 os.chdir(output_dir)
+slsqp_ifile = os.path.join(output_dir, f"SLSQP_{os.getpid()}.out")
+slsqp_history = os.path.join(output_dir, f"opt_hist_{os.getpid()}.hst")
 
 def update_gui(current_dvs):
     for name, val in current_dvs.items():
@@ -141,11 +142,10 @@ def objfunc(x_dict):
     global iter
     global mass
     # span, chord and taper
-    span = float(x_dict["span"]) * span_mul
-    Mean_chord = float(x_dict["Mean_chord"]) / chord_div
+    span = span_min + float(x_dict["span"]) * (span_max - span_min)
+    Mean_chord = chord_min + float(x_dict["Mean_chord"]) * (chord_max - chord_min)
     CG = Mean_chord / 3 
-    taper = float(x_dict["taper"])
-    taper = taper * taper_mul
+    taper = taper_min + float(x_dict["taper"]) * (taper_max - taper_min)
     #root and tip
     root = 2 * Mean_chord / (1 + taper)
     tip = root * taper
@@ -154,17 +154,18 @@ def objfunc(x_dict):
     #prop ele
     prop_ele = 0.01
     #wing angle
-    wing_angle = float(x_dict["wing_angle"]) * angle_mul
+    wing_angle = angle_min + float(x_dict["wing_angle"]) * (angle_max - angle_min)
     wing_pos["yr"] = wing_angle
     
     # RPS ratio
-    thrust_ratio = float(x_dict["thrust_ratio"]) * thrust_mul
-    thrust_ratio_landing = float(x_dict["thrust_ratio_landing"]) * thrust_mul
+    thrust_ratio = thrust_min + float(x_dict["thrust_ratio"]) * (thrust_max - thrust_min)
+    thrust_ratio_landing = landing_thrust_min + float(x_dict["thrust_ratio_landing"]) * (landing_thrust_max - landing_thrust_min)
     # Record
     taper_hst.append(taper)
     span_hst.append(span)
     chord_hst.append(Mean_chord)
     ratio_hst.append(thrust_ratio)
+    landing_ratio_hst.append(thrust_ratio_landing)
     wingang_hst.append(wing_angle)
     # 定义问题
     funcs = {}
@@ -194,19 +195,53 @@ def objfunc(x_dict):
     update_gui({"root": root, "tip": tip, "span": span, "根梢比": taper, "平均弦长": Mean_chord, "Nprops": Nprops, "wing_angle": wing_angle, "当前循环": iter, 
                 "总质量": mass, "机翼质量": wing_mass, "thrust ratio":thrust_ratio, "thrust_ratio_landing": thrust_ratio_landing})
 
-    flight_condition = {"speed": cruise_spd, "max_AOA":max_AOA, "Cl_target":Cl_target, "TR": thrust_ratio, "d0":d0_C }
-    geo_info = {"spanlist":spanlist, "chordlist":chordlist, "span":span, "wing_S":wing_S, "bref":Mean_chord, "cref":2*span,
-                "CG": CG, "def_cfg": def_cfg, "prop_D":prop_D,"prop_D_inch":prop_D_inch, "prop_pos":prop_pos}
-    config={"max_it":drag_maxit, "tol":[0.01, 0.01, 0.01], "relax":[omega_drag, omega_lift], "max_alpha_step":max_step,"propdata":prop_data}
-
-    lift, drag, power, alpha, RPM, thrust, mass_result, ele_def = opb.single_point(flight_condition, geo_info, config)
+    max_AOA_case = max_AOA - wing_angle
+    flight_condition = {"speed": cruise_spd, "max_AOA":max_AOA_case, "Cl_target":Cl_target, "TR": thrust_ratio, "d0_others":d0_C }
+    geo_info = {"spanlist":spanlist, "chordlist":chordlist, "span":span, "wing_S":wing_S, "bref":2*span, "cref":Mean_chord,
+                "CG": CG, "def_cfg": def_cfg, "prop_D":prop_D,"prop_D_inch":prop_D_inch, "prop_pos":prop_pos,
+                "t_over_c": airfoil_cfg["ThickChord"]}
+    broyden_config = opb.make_broyden_config(prop_data, max_AOA_case, mass * g)
+    lift, drag, power, alpha, RPM, thrust, mass_result, ele_def = opb.single_point(
+        flight_condition, geo_info, broyden_config
+    )
+    RPM, Ct, Cp = prop.equal_thrust(
+        prop_data, thrust, cruise_spd, prop_D_inch, thrust_ratio
+    )
+    cruise_stall_limit = opb.run_stall_limit_sweep(
+        CG,
+        cruise_spd,
+        geo_info,
+        airfoil_cfg,
+        angle=def_cfg.copy(),
+        prop_D=prop_D,
+        RPM=RPM,
+        Ct=Ct,
+        Cp=Cp,
+        sol_config=opb.solver_config0,
+        limit_config=dict(project_config.STALL_LIMIT_CONFIG),
+        flap_cfg=flap_cfg,
+        flap_deflection=0.0,
+    )
+    if not cruise_stall_limit["usable"]:
+        raise RuntimeError(
+            f"Cruise stall limit is unusable: {cruise_stall_limit['reason']}"
+        )
+    cruise_alpha_limit = cruise_stall_limit["alpha_limit"]
+    flight_condition["max_AOA"] = cruise_alpha_limit
+    broyden_config = opb.make_broyden_config(
+        prop_data, cruise_alpha_limit, mass * g
+    )
+    lift, drag, power, alpha, RPM, thrust, mass_result, ele_def = opb.single_point(
+        flight_condition, geo_info, broyden_config
+    )
 
     mass = mass_result["mass"]
     wing_mass = mass_result["wing_mass"]
-    drag_resC = thrust - drag #巡航阻力残差
+    d0_wing_C = opb.calculate_parasite_drag_from_lod(cruise_spd, airfoil_cfg["ThickChord"])
+    drag_resC = thrust - drag - d0_C - d0_wing_C #巡航阻力残差
     lift_res = lift - mass*g
     
-    LD = lift / (drag + d0_C)
+    LD = lift / (drag + d0_C + d0_wing_C)
     eff = mass / power
     power_hst.append(power)
     AR = (span*2)**2/wing_S
@@ -217,15 +252,51 @@ def objfunc(x_dict):
 
     if include_TL:
         # 升力约束
-        max_L_AOA = max_AOA - wing_angle 
+        max_L_AOA = max_AOA_case
         def_cfg["Flaperon"] = flap_angle
 
-        flight_condition = {"speed": min_speed, "max_AOA":max_L_AOA, "Cl_target":-1, "TR": thrust_ratio_landing, "d0":d0_L }
+        flight_condition = {"speed": min_speed, "max_AOA":max_L_AOA, "Cl_target":-1, "TR": thrust_ratio_landing, "d0_others":d0_L }
         geo_info["def_cfg"] = def_cfg
 
-        lift_L, drag, power_L, alpha, RPM_L, thrust, mass_L, ele_def = opb.single_point(flight_condition, geo_info, config)
+        broyden_config = opb.make_broyden_config(
+            prop_data, max_L_AOA, mass * g
+        )
+        lift_L, drag, power_L, alpha, RPM_L, thrust, mass_L, ele_def = opb.single_point(
+            flight_condition, geo_info, broyden_config
+        )
+        RPM_L, Ct_L, Cp_L = prop.equal_thrust(
+            prop_data, thrust, min_speed, prop_D_inch, thrust_ratio_landing
+        )
+        landing_stall_limit = opb.run_stall_limit_sweep(
+            CG,
+            min_speed,
+            geo_info,
+            airfoil_cfg,
+            angle=def_cfg.copy(),
+            prop_D=prop_D,
+            RPM=RPM_L,
+            Ct=Ct_L,
+            Cp=Cp_L,
+            sol_config=opb.solver_config0,
+            limit_config=dict(project_config.STALL_LIMIT_CONFIG),
+            flap_cfg=flap_cfg,
+            flap_deflection=flap_angle,
+        )
+        if not landing_stall_limit["usable"]:
+            raise RuntimeError(
+                f"Landing stall limit is unusable: {landing_stall_limit['reason']}"
+            )
+        max_L_AOA = landing_stall_limit["alpha_limit"]
+        flight_condition["max_AOA"] = max_L_AOA
+        broyden_config = opb.make_broyden_config(
+            prop_data, max_L_AOA, mass * g
+        )
+        lift_L, drag, power_L, alpha, RPM_L, thrust, mass_L, ele_def = opb.single_point(
+            flight_condition, geo_info, broyden_config
+        )
 
-        drag_resL = thrust - drag #最小速度阻力残差
+        d0_wing_L = opb.calculate_parasite_drag_from_lod(min_speed, airfoil_cfg["ThickChord"])
+        drag_resL = thrust - drag - d0_L - d0_wing_L #最小速度阻力残差
 
         # 返回目标值
         penalty = lift_L - mass * g #升力不足时penalty负
@@ -239,6 +310,11 @@ def objfunc(x_dict):
         target = power
     funcs["obj"] = target
     iter = iter + 1
+
+    if target_hst:
+        target_delta_hst.append(target - target_hst[-1])
+    else:
+        target_delta_hst.append("")
 
     #添加历史
     ele_L.append(ele_def)
@@ -255,16 +331,39 @@ def objfunc(x_dict):
                 "阻力残差": str(drag_resC) + " - " + str(drag_resL), "功率-目标": str(power) + " - " + str(target)})
     return funcs, False
 
+def objfunc_sens(x_dict, funcs):
+    dv_names = [
+        "span",
+        "Mean_chord",
+        "taper",
+        "wing_angle",
+        "thrust_ratio",
+        "thrust_ratio_landing",
+    ]
+    funcs_sens = {"obj": {}}
+    fail = False
+    base_obj = float(funcs["obj"])
+
+    for name in dv_names:
+        step = sen_step * sens_scale[name]
+        x_perturbed = dict(x_dict)
+        x_perturbed[name] = float(x_dict[name]) + step
+        funcs_perturbed, fail_perturbed = objfunc(x_perturbed)
+        funcs_sens["obj"][name] = (float(funcs_perturbed["obj"]) - base_obj) / step
+        fail = fail or fail_perturbed
+
+    return funcs_sens, fail
+
 def run_optimization():
     # 初始化问题
     optProb = Optimization("Auto", objfunc)
     # 添加设计变量
-    optProb.addVar("span", "c", lower = 0.75 / span_mul, upper = 0.93 / span_mul, value = 0.9 / span_mul)
-    optProb.addVar("Mean_chord", "c", lower = 0.12 * chord_div, upper = 0.22 * chord_div, value = 0.2 * chord_div)
-    optProb.addVar("taper", "c", lower=0.5 / taper_mul, upper = 0.9 /taper_mul, value = 0.6 / taper_mul) #tip/root
-    optProb.addVar("wing_angle", "c", lower= 0 / angle_mul, upper = 2 / angle_mul, value = 1/  angle_mul)
-    optProb.addVar("thrust_ratio", "c", lower = min_thr_ratio / thrust_mul, upper = max_thr_ratio / thrust_mul, value = 0.7 /thrust_mul)
-    optProb.addVar("thrust_ratio_landing", "c", lower = min_thr_ratio / thrust_mul, upper = max_thr_ratio / thrust_mul, value = 0.4 /thrust_mul)
+    optProb.addVar("span", "c", lower = 0.0, upper = 1.0, value = (span_value - span_min) / (span_max - span_min))
+    optProb.addVar("Mean_chord", "c", lower = 0.0, upper = 1.0, value = (chord_value - chord_min) / (chord_max - chord_min))
+    optProb.addVar("taper", "c", lower = 0.0, upper = 1.0, value = (taper_value - taper_min) / (taper_max - taper_min))
+    optProb.addVar("wing_angle", "c", lower = 0.0, upper = 1.0, value = (angle_value - angle_min) / (angle_max - angle_min))
+    optProb.addVar("thrust_ratio", "c", lower = 0.0, upper = 1.0, value = (thrust_value - thrust_min) / (thrust_max - thrust_min))
+    optProb.addVar("thrust_ratio_landing", "c", lower = 0.0, upper = 1.0, value = (landing_thrust_value - landing_thrust_min) / (landing_thrust_max - landing_thrust_min))
     # rst begin addObj
     optProb.addObj("obj")
 
@@ -273,9 +372,14 @@ def run_optimization():
     optProb.printSparsity()
 
     # 配置SLSQP参数（更大胆的收敛策略）
-    optOptions = {"ACC": ACC, "MAXIT": 15, "IPRINT": 2}
+    optOptions = {
+        "ACC": ACC,
+        "MAXIT": project_config.SLSQP_MAXIT,
+        "IPRINT": 2,
+        "IFILE": slsqp_ifile,
+    }
     opt = SLSQP(options=optOptions)
-    sol = opt(optProb, sens="FD", sensStep = sen_step, storeHistory="opt_hist.hst")
+    sol = opt(optProb, sens=objfunc_sens, storeHistory=slsqp_history)
     print(sol)
 
 def main():
@@ -373,6 +477,8 @@ with open('history.csv', 'w', encoding='utf-8', newline='') as f:
     writer.writerow(['LP_hst'] + LP_hst)
     writer.writerow(['RPMC'] + RPMC_hst)
     writer.writerow(['thrust_ratio'] + ratio_hst)
+    writer.writerow(['thrust_ratio_landing'] + landing_ratio_hst)
     writer.writerow(['Lift_L'] + liftL_hst)
     writer.writerow(['Target'] + target_hst)
+    writer.writerow(['Target_delta'] + target_delta_hst)
     writer.writerow(['POWER'] + power_hst)

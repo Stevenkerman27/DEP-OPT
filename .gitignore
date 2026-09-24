@@ -3,3 +3,7 @@ __pycache__/
 archive/
 data/
 outputs/
+.codegraph/
+test/
+docs/
+results/
